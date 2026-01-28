@@ -413,13 +413,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 122d40607b18bb34c88fd4e5f10b027e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  isBorderless: 1
-  isTransparent: 1
+  currentMode: 0
   isTopmost: 1
-  hideFromTaskbar: 1
-  targetWidth: 300
-  targetHeight: 300
-  backgroundColor: {r: 0, g: 0, b: 0, a: 0}
+  objWidth: 300
+  objHeight: 300
 --- !u!4 &263354010
 Transform:
   m_ObjectHideFlags: 0
@@ -448,13 +445,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   windowManager: {fileID: 263354009}
-  allowDrag: 1
   enableElasticSnap: 1
   snapSmoothTime: 0.12
-  dragEvenOnUI: 0
-  allowMenu: 1
-  menuObject: {fileID: 343351454}
-  menuOffset: {x: 5, y: -5}
 --- !u!114 &263354012
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -467,6 +459,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7756e3ee804322946b46b474aaceb747, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  windowManager: {fileID: 263354009}
   hitLayer:
     serializedVersion: 2
     m_Bits: 33
