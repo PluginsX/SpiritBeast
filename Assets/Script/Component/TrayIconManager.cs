@@ -17,7 +17,13 @@ public class TrayIconManager : MonoBehaviour
     [DllImport("user32.dll", CharSet = CharSet.Auto)] private static extern bool AppendMenu(IntPtr hMenu, uint uFlags, uint uIDNewItem, string lpNewItem);
     [DllImport("user32.dll")] private static extern uint TrackPopupMenu(IntPtr hMenu, uint uFlags, int x, int y, int nReserved, IntPtr hWnd, IntPtr prcRect);
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT lpPoint);
+    
+    [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr ExtractIcon(IntPtr hInst, string lpszExeFileName, int nIconIndex);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr GetModuleHandle(string lpModuleName);
+    
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     public struct NOTIFYICONDATA { public int cbSize; public IntPtr hWnd; public int uID; public int uFlags; public int uCallbackMessage; public IntPtr hIcon; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip; public int dwState; public int dwStateMask; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo; public int uVersion; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle; public int dwInfoFlags; }
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x; public int y; }
@@ -57,9 +63,31 @@ public class TrayIconManager : MonoBehaviour
         return CallWindowProc(oldWndProcPtr, hWnd, msg, wParam, lParam);
     }
 
-    private void InitTray() {
-        nid = new NOTIFYICONDATA { cbSize = Marshal.SizeOf(typeof(NOTIFYICONDATA)), hWnd = windowHandle, uID = 1, uFlags = 7, uCallbackMessage = 0x0401, hIcon = LoadIcon(IntPtr.Zero, (IntPtr)32512), szTip = tooltip };
-        Shell_NotifyIcon(0, ref nid);
+    private void InitTray()
+    {
+        // 获取当前运行的 .exe 文件的路径
+        string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+        
+        // 提取 .exe 中的第一个图标 (索引为 0)
+        IntPtr hIcon = ExtractIcon(GetModuleHandle(null), exePath, 0);
+
+        // 如果提取失败，再尝试加载系统默认图标作为兜底
+        if (hIcon == IntPtr.Zero)
+        {
+            hIcon = LoadIcon(IntPtr.Zero, (IntPtr)32512); // IDI_APPLICATION
+        }
+
+        nid = new NOTIFYICONDATA
+        {
+            cbSize = Marshal.SizeOf(typeof(NOTIFYICONDATA)),
+            hWnd = windowHandle,
+            uID = 1,
+            uFlags = 7, // NIF_MESSAGE | NIF_ICON | NIF_TIP
+            uCallbackMessage = 0x0401,
+            hIcon = hIcon, // 使用提取到的图标
+            szTip = tooltip
+        };
+        Shell_NotifyIcon(0, ref nid); // NIM_ADD
     }
 
     private void ShowMenu() {
