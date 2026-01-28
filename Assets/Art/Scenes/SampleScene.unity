@@ -417,6 +417,15 @@ MonoBehaviour:
   isTopmost: 1
   objWidth: 300
   objHeight: 300
+  OnWindowModeChanged:
+    m_PersistentCalls:
+      m_Calls: []
+  OnSwitchedToSpirit:
+    m_PersistentCalls:
+      m_Calls: []
+  OnSwitchedToObject:
+    m_PersistentCalls:
+      m_Calls: []
   windowPosition: {x: 0, y: 0}
   windowSize: {x: 0, y: 0}
   cursorPosition: {x: 0, y: 0}
@@ -492,6 +501,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   windowManager: {fileID: 263354009}
+  interaction: {fileID: 0}
   hitLayer:
     serializedVersion: 2
     m_Bits: 33
@@ -7266,10 +7276,10 @@ CanvasRenderer:
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
+  - {fileID: 263354010}
   - {fileID: 330585546}
   - {fileID: 410087041}
   - {fileID: 191978443}
   - {fileID: 123311288}
   - {fileID: 506760844}
-  - {fileID: 263354010}
   - {fileID: 343351458}
