@@ -37,6 +37,8 @@ public class WindowInteraction : MonoBehaviour
         // 1. 处理左键按下：开始拖拽
         if (allowDrag && Input.GetMouseButtonDown(0))
         {
+            // 注意：因为有 TrayIconManager 的穿透逻辑，透明处收不到点击
+            // 只有点在模型/UI上时，才会执行到这里
             if (!dragEvenOnUI && EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) return;
             StartCoroutine(DragRoutine());
         }
@@ -58,12 +60,12 @@ public class WindowInteraction : MonoBehaviour
 
         #if !UNITY_EDITOR
         ReleaseCapture();
-        // SendMessage 会阻塞 Unity 直到鼠标抬起
+        // SendMessage 会阻塞 Unity 直到鼠标抬起，这保证了手感的同步
         SendMessage(windowManager.WindowHandle, 0xA1, 0x02, 0); 
         #endif
 
         // --- 鼠标在此刻已经抬起 ---
-        Input.ResetInputAxes(); // 核心：重置输入状态
+        Input.ResetInputAxes(); 
 
         if (enableElasticSnap)
         {
@@ -75,21 +77,20 @@ public class WindowInteraction : MonoBehaviour
     private IEnumerator DoElasticSnap()
     {
         Vector2Int currentPos = windowManager.GetWindowPosition();
-        // 获取当前窗口“大部分所在”的那个屏幕的工作区
-        WindowManager.RECT workArea = windowManager.GetCurrentWorkArea();
+        
+        // 获取工作区
+        WindowManager.RECT workArea = windowManager.GetCurrentMonitorWorkArea();
 
-        // 计算当前显示器的边界限制
+        // 计算目标安全位置
         int targetX = Mathf.Clamp(currentPos.x, workArea.Left, workArea.Right - windowManager.targetWidth);
         int targetY = Mathf.Clamp(currentPos.y, workArea.Top, workArea.Bottom - windowManager.targetHeight);
 
-        // 如果已经在该屏内，不需要回弹
         if (targetX == currentPos.x && targetY == currentPos.y) yield break;
 
         Vector2 targetVec = new Vector2(targetX, targetY);
         Vector2 currentFloatPos = new Vector2(currentPos.x, currentPos.y);
         Vector2 velocity = Vector2.zero;
 
-        // 弹性插值回弹
         while (Vector2.Distance(currentFloatPos, targetVec) > 0.5f)
         {
             currentFloatPos = Vector2.SmoothDamp(currentFloatPos, targetVec, ref velocity, snapSmoothTime);
@@ -97,7 +98,6 @@ public class WindowInteraction : MonoBehaviour
             yield return null;
         }
 
-        // 物理位置对齐
         windowManager.MoveWindow(targetX, targetY);
     }
 
@@ -106,7 +106,6 @@ public class WindowInteraction : MonoBehaviour
         if (menuObject != null)
         {
             menuObject.SetActive(true);
-            // 菜单位置跟随鼠标
             Vector3 mPos = Input.mousePosition;
             menuObject.transform.position = new Vector3(mPos.x + menuOffset.x, mPos.y + menuOffset.y, 0);
         }
