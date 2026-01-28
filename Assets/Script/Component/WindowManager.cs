@@ -16,10 +16,9 @@ public class WindowManager : MonoBehaviour
 
     [Header("URP 相机设置")]
     public Color backgroundColor = new Color(0, 0, 0, 0);
-    [Tooltip("开启后处理可能会导致透明区域变黑，需配合特定Shader使用")]
+    [Tooltip("开启后处理可能会导致透明区域变黑")]
     public bool usePostProcessing = false;
 
-    // 暴露句柄给交互脚本
     public IntPtr WindowHandle { get; private set; }
 
     // ==================== Windows API 导入 ====================
@@ -29,8 +28,13 @@ public class WindowManager : MonoBehaviour
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
-    [DllImport("user32.dll")] private static extern bool SystemParametersInfo(int uiAction, int uiParam, ref RECT pvParam, int fWinIni);
     [DllImport("dwmapi.dll")] private static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS margins);
+
+    // 多显示器支持 API
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
 
     [Serializable]
     [StructLayout(LayoutKind.Sequential)]
@@ -39,23 +43,28 @@ public class WindowManager : MonoBehaviour
     [StructLayout(LayoutKind.Sequential)]
     public struct MARGINS { public int leftWidth, rightWidth, topHeight, bottomHeight; }
 
-    private void Awake()
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor; // 整个显示器
+        public RECT rcWork;    // 工作区 (不含任务栏)
+        public uint dwFlags;
+    }
+
+    void Awake()
     {
         #if !UNITY_EDITOR
-        SetProcessDPIAware(); // 解决高分屏缩放变形
+        SetProcessDPIAware(); // 必须在获取句柄前调用
         WindowHandle = GetActiveWindow();
         #endif
         ApplySettings();
     }
 
-    /// <summary>
-    /// 应用窗口物理属性
-    /// </summary>
     public void ApplySettings()
     {
         #if UNITY_EDITOR
-        InitURPCamera();
-        return;
+        InitURPCamera(); return;
         #endif
 
         if (WindowHandle == IntPtr.Zero) return;
@@ -64,24 +73,20 @@ public class WindowManager : MonoBehaviour
 
         // 1. 无边框样式
         if (isBorderless)
-        {
-            const uint WS_POPUP = 0x80000000;
-            const uint WS_VISIBLE = 0x10000000;
-            SetWindowLongPtr64(WindowHandle, -16, (IntPtr)(WS_POPUP | WS_VISIBLE));
-        }
+            SetWindowLongPtr64(WindowHandle, -16, (IntPtr)(0x80000000 | 0x10000000));
 
-        // 2. DWM Alpha 透明
+        // 2. 透明设置
         if (isTransparent)
         {
             long exStyle = (long)GetWindowLongPtr64(WindowHandle, -20);
-            exStyle |= 0x80000; // WS_EX_LAYERED
+            exStyle |= 0x80000;      // WS_EX_LAYERED (透明支持)
+            exStyle |= 0x00000080;   // WS_EX_TOOLWINDOW (隐藏任务栏标签)
             SetWindowLongPtr64(WindowHandle, -20, (IntPtr)exStyle);
-
             MARGINS margins = new MARGINS { leftWidth = -1 };
             DwmExtendFrameIntoClientArea(WindowHandle, ref margins);
         }
 
-        // 3. 置顶与初始位置刷新
+        // 3. 置顶与尺寸
         IntPtr hWndInsertAfter = isTopmost ? (IntPtr)(-1) : (IntPtr)(-2);
         SetWindowPos(WindowHandle, hWndInsertAfter, 0, 0, targetWidth, targetHeight, 0x0002 | 0x0020 | 0x0040);
     }
@@ -89,19 +94,26 @@ public class WindowManager : MonoBehaviour
     private void InitURPCamera()
     {
         Camera cam = Camera.main;
-        if (cam == null) return;
+        if (!cam) return;
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = backgroundColor;
         cam.allowHDR = false;
         var urpData = cam.GetComponent<UniversalAdditionalCameraData>();
-        if (urpData != null)
-        {
-            urpData.renderPostProcessing = usePostProcessing;
-            urpData.volumeLayerMask = 0;
-        }
+        if (urpData) { urpData.renderPostProcessing = usePostProcessing; urpData.volumeLayerMask = 0; }
     }
 
-    // --- 工具方法供交互脚本调用 ---
+    // 获取当前窗口所在的显示器工作区 (支持多屏)
+    public RECT GetCurrentWorkArea()
+    {
+        #if UNITY_EDITOR
+        return new RECT { Right = Screen.width, Bottom = Screen.height };
+        #endif
+        IntPtr monitor = MonitorFromWindow(WindowHandle, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = new MONITORINFO();
+        mi.cbSize = Marshal.SizeOf(mi);
+        if (GetMonitorInfo(monitor, ref mi)) return mi.rcWork;
+        return new RECT { Right = 1920, Bottom = 1080 }; // 兜底返回
+    }
 
     public Vector2Int GetWindowPosition()
     {
@@ -111,14 +123,6 @@ public class WindowManager : MonoBehaviour
 
     public void MoveWindow(int x, int y)
     {
-        // NOSIZE | NOZORDER | NOACTIVATE
         SetWindowPos(WindowHandle, IntPtr.Zero, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010);
-    }
-
-    public RECT GetWorkArea()
-    {
-        RECT rect = new RECT();
-        SystemParametersInfo(0x30, 0, ref rect, 0); // SPI_GETWORKAREA
-        return rect;
     }
 }

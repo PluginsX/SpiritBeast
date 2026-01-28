@@ -389,6 +389,7 @@ GameObject:
   - component: {fileID: 263354010}
   - component: {fileID: 263354009}
   - component: {fileID: 263354011}
+  - component: {fileID: 263354012}
   m_Layer: 0
   m_Name: WindowManager
   m_TagString: Untagged
@@ -450,6 +451,19 @@ MonoBehaviour:
   allowMenu: 1
   menuObject: {fileID: 343351454}
   menuOffset: {x: 5, y: -5}
+--- !u!114 &263354012
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 263354008}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7756e3ee804322946b46b474aaceb747, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  tooltip: "\u5668\u7075"
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0

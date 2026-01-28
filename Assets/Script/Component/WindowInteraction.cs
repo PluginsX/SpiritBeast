@@ -9,15 +9,13 @@ public class WindowInteraction : MonoBehaviour
     [Header("引用")]
     [SerializeField] private WindowManager windowManager;
 
-    [Header("拖拽与弹性设置")]
+    [Header("拖拽与吸附")]
     public bool allowDrag = true;
     public bool enableElasticSnap = true;
-    [Tooltip("回弹动画的顺滑时间，越小越快")]
-    public float snapSmoothTime = 0.12f;
-    [Tooltip("如果点击在UI上，是否依然允许拖拽窗口")]
+    [Range(0.05f, 0.3f)] public float snapSmoothTime = 0.12f;
     public bool dragEvenOnUI = false;
 
-    [Header("右键菜单设置")]
+    [Header("右键菜单")]
     public bool allowMenu = true;
     public GameObject menuObject;
     public Vector2 menuOffset = new Vector2(10, -10);
@@ -27,7 +25,6 @@ public class WindowInteraction : MonoBehaviour
     [DllImport("user32.dll")] private static extern bool SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
 
     private Coroutine snapCoroutine;
-    private bool isDragging = false;
 
     void Start()
     {
@@ -37,23 +34,17 @@ public class WindowInteraction : MonoBehaviour
 
     void Update()
     {
-        // 1. 处理左键拖拽
+        // 1. 处理左键按下：开始拖拽
         if (allowDrag && Input.GetMouseButtonDown(0))
         {
-            bool isOverUI = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
-            if (!isOverUI || dragEvenOnUI)
-            {
-                StartCoroutine(DragRoutine());
-            }
+            if (!dragEvenOnUI && EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) return;
+            StartCoroutine(DragRoutine());
         }
 
-        // 2. 处理右键菜单
-        if (allowMenu && Input.GetMouseButtonDown(1))
-        {
-            ShowMenu();
-        }
+        // 2. 右键菜单
+        if (allowMenu && Input.GetMouseButtonDown(1)) ShowMenu();
 
-        // 3. 点击空白处关闭菜单
+        // 3. 点击空白关闭菜单
         if (Input.GetMouseButtonDown(0) && menuObject != null && menuObject.activeSelf)
         {
             if (EventSystem.current != null && !EventSystem.current.IsPointerOverGameObject())
@@ -61,23 +52,18 @@ public class WindowInteraction : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 核心拖拽协程：利用SendMessage的阻塞特性
-    /// </summary>
     private IEnumerator DragRoutine()
     {
-        isDragging = true;
-        if (snapCoroutine != null) StopCoroutine(snapCoroutine); // 抓取时停止回弹
+        if (snapCoroutine != null) StopCoroutine(snapCoroutine);
 
         #if !UNITY_EDITOR
         ReleaseCapture();
-        // SendMessage会阻塞主线程直到鼠标松开
+        // SendMessage 会阻塞 Unity 直到鼠标抬起
         SendMessage(windowManager.WindowHandle, 0xA1, 0x02, 0); 
         #endif
 
-        // --- 鼠标在此处松开 ---
-        isDragging = false;
-        Input.ResetInputAxes(); // 关键修复：重置输入防止点击失效
+        // --- 鼠标在此刻已经抬起 ---
+        Input.ResetInputAxes(); // 核心：重置输入状态
 
         if (enableElasticSnap)
         {
@@ -86,26 +72,24 @@ public class WindowInteraction : MonoBehaviour
         yield return null;
     }
 
-    /// <summary>
-    /// 弹性回弹逻辑：使用 SmoothDamp 算法
-    /// </summary>
     private IEnumerator DoElasticSnap()
     {
         Vector2Int currentPos = windowManager.GetWindowPosition();
-        WindowManager.RECT workArea = windowManager.GetWorkArea();
+        // 获取当前窗口“大部分所在”的那个屏幕的工作区
+        WindowManager.RECT workArea = windowManager.GetCurrentWorkArea();
 
-        // 计算目标安全位置
+        // 计算当前显示器的边界限制
         int targetX = Mathf.Clamp(currentPos.x, workArea.Left, workArea.Right - windowManager.targetWidth);
         int targetY = Mathf.Clamp(currentPos.y, workArea.Top, workArea.Bottom - windowManager.targetHeight);
 
-        // 如果已经在安全区内，直接退出
+        // 如果已经在该屏内，不需要回弹
         if (targetX == currentPos.x && targetY == currentPos.y) yield break;
 
         Vector2 targetVec = new Vector2(targetX, targetY);
         Vector2 currentFloatPos = new Vector2(currentPos.x, currentPos.y);
         Vector2 velocity = Vector2.zero;
 
-        // 执行平滑位移
+        // 弹性插值回弹
         while (Vector2.Distance(currentFloatPos, targetVec) > 0.5f)
         {
             currentFloatPos = Vector2.SmoothDamp(currentFloatPos, targetVec, ref velocity, snapSmoothTime);
@@ -113,7 +97,7 @@ public class WindowInteraction : MonoBehaviour
             yield return null;
         }
 
-        // 最终精准对齐
+        // 物理位置对齐
         windowManager.MoveWindow(targetX, targetY);
     }
 
@@ -122,11 +106,11 @@ public class WindowInteraction : MonoBehaviour
         if (menuObject != null)
         {
             menuObject.SetActive(true);
-            Vector3 mousePos = Input.mousePosition;
-            menuObject.transform.position = new Vector3(mousePos.x + menuOffset.x, mousePos.y + menuOffset.y, 0);
+            // 菜单位置跟随鼠标
+            Vector3 mPos = Input.mousePosition;
+            menuObject.transform.position = new Vector3(mPos.x + menuOffset.x, mPos.y + menuOffset.y, 0);
         }
     }
 
-    // 绑定至UI按钮的方法
     public void QuitApp() => Application.Quit();
 }
