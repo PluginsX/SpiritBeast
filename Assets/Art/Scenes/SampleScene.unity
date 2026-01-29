@@ -689,8 +689,8 @@ MonoBehaviour:
   enableBottom: 1
   enableLeft: 1
   enableRight: 1
-  enableNear: 1
-  enableFar: 1
+  enableNear: 0
+  enableFar: 0
   wallThickness: 0.5
   physicsMaterial: {fileID: 0}
   objectLayerIndex: 0
