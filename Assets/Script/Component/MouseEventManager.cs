@@ -2,8 +2,7 @@ using UnityEngine;
 
 /// <summary>
 /// 全局鼠标事件管理器。
-/// 负责发射射线，检测碰撞，并向 MouseEventResponder 分发事件。
-/// 支持鼠标全局事件的调试输出。
+/// 修复了 MouseUp 逻辑，确保按下物体的对象一定能收到松开事件。
 /// </summary>
 public class MouseEventManager : MonoBehaviour
 {
@@ -15,7 +14,7 @@ public class MouseEventManager : MonoBehaviour
     public LayerMask detectionLayers = Physics.DefaultRaycastLayers;
 
     [Tooltip("射线最大检测距离")]
-    public float maxDistance = 1000f;
+    public float maxDistance = 100f;
 
     [Header("调试")]
     [Tooltip("是否在控制台输出鼠标的全局操作信息")]
@@ -23,7 +22,7 @@ public class MouseEventManager : MonoBehaviour
 
     // --- 内部状态记录 ---
     private MouseEventResponder currentHoveredResponder; 
-    private MouseEventResponder pendingClickResponder;   
+    private MouseEventResponder pendingClickResponder; // 记录按下时的对象
 
     // 用于检测鼠标是否移动的上一帧位置
     private Vector3 lastMousePosition;
@@ -41,7 +40,7 @@ public class MouseEventManager : MonoBehaviour
     {
         if (targetCamera == null) return;
 
-        // --- 1. 调试信息：全局鼠标行为 ---
+        // --- 1. 调试信息 ---
         if (showDebugInfo)
         {
             DebugGlobalMouseEvents();
@@ -67,35 +66,6 @@ public class MouseEventManager : MonoBehaviour
         HandleClickLogic(hitResponder);
     }
 
-    /// <summary>
-    /// 输出全局鼠标调试信息
-    /// </summary>
-    private void DebugGlobalMouseEvents()
-    {
-        string prefix = "<color=#00FFFF>[MouseEventManager]</color> ";
-
-        // 按下
-        if (Input.GetMouseButtonDown(0)) Debug.Log(prefix + "Left Mouse Button DOWN");
-        if (Input.GetMouseButtonDown(1)) Debug.Log(prefix + "Right Mouse Button DOWN");
-        if (Input.GetMouseButtonDown(2)) Debug.Log(prefix + "Middle Mouse Button DOWN");
-
-        // 松开
-        if (Input.GetMouseButtonUp(0)) Debug.Log(prefix + "Left Mouse Button UP");
-        if (Input.GetMouseButtonUp(1)) Debug.Log(prefix + "Right Mouse Button UP");
-        if (Input.GetMouseButtonUp(2)) Debug.Log(prefix + "Middle Mouse Button UP");
-
-        // 滚轮
-        float scroll = Input.mouseScrollDelta.y;
-        if (scroll != 0) Debug.Log(prefix + "Mouse Scroll: " + scroll);
-
-        // 移动 (只有位置改变才输出，防止每帧刷屏导致卡顿)
-        if (Input.mousePosition != lastMousePosition)
-        {
-            Debug.Log(prefix + "Mouse Moved to: " + Input.mousePosition);
-            lastMousePosition = Input.mousePosition;
-        }
-    }
-
     private void HandleHoverLogic(MouseEventResponder newResponder)
     {
         if (currentHoveredResponder != newResponder)
@@ -114,32 +84,55 @@ public class MouseEventManager : MonoBehaviour
         }
     }
 
+    // --- 核心修改区域 ---
     private void HandleClickLogic(MouseEventResponder hitResponder)
     {
-        // 鼠标按下
+        // --- 鼠标按下 ---
         if (Input.GetMouseButtonDown(0)) 
         {
             if (hitResponder != null)
             {
                 hitResponder.TriggerDown();
+                // 关键点：记录谁被按下了
                 pendingClickResponder = hitResponder;
             }
         }
 
-        // 鼠标抬起
+        // --- 鼠标松开 ---
         if (Input.GetMouseButtonUp(0))
         {
-            if (hitResponder != null)
+            // 逻辑修正：
+            // 只要之前有物体被按下，无论现在鼠标在哪，都必须通知该物体“松开”了。
+            // 这样才能闭环，保证拖拽等逻辑能正确结束。
+            if (pendingClickResponder != null)
             {
-                hitResponder.TriggerUp();
+                pendingClickResponder.TriggerUp();
             }
 
+            // 判断完整的点击 (Click)：
+            // 只有当“当初按下的物体” == “现在鼠标悬停的物体”时，才算点击
             if (pendingClickResponder != null && pendingClickResponder == hitResponder)
             {
                 pendingClickResponder.TriggerClick();
             }
 
+            // 重置状态
             pendingClickResponder = null;
+        }
+    }
+
+    private void DebugGlobalMouseEvents()
+    {
+        string prefix = "<color=#00FFFF>[MouseEventManager]</color> ";
+
+        if (Input.GetMouseButtonDown(0)) Debug.Log(prefix + "Left Mouse Button DOWN");
+        if (Input.GetMouseButtonUp(0)) Debug.Log(prefix + "Left Mouse Button UP");
+        
+        // 只有位置改变才输出
+        if (Vector3.Distance(Input.mousePosition, lastMousePosition) > 1f)
+        {
+            // Debug.Log(prefix + "Mouse Moved"); // 减少刷屏，注释掉
+            lastMousePosition = Input.mousePosition;
         }
     }
 }

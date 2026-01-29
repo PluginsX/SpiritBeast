@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 /// <summary>
 /// 自动生成并实时更新包裹指定摄像机视口的碰撞墙壁。
-/// 支持编辑器实时预览、运行时物理生成、以及 Unity 2022+ 的 Layer Overrides 设置。
+/// 修复了图层设置不直观的问题，支持通过名称指定 Layer。
 /// </summary>
 [ExecuteAlways]
 public class CameraBounds : MonoBehaviour
@@ -26,17 +26,18 @@ public class CameraBounds : MonoBehaviour
     [Tooltip("物理材质 (3D)")]
     public PhysicMaterial physicsMaterial;
 
-    // --- 新增：层级设置 ---
-    [Header("层级与碰撞覆盖 (Layer Overrides)")]
+    // --- 修改点：使用字符串名称来配置图层，比 int 索引更直观、更不容易出错 ---
+    [Header("图层与碰撞矩阵 (Layer Settings)")]
     
-    [Tooltip("生成的墙壁 GameObject 本身所在的层级 ID (0=Default)。\n如果你希望射线能穿透墙壁，可以将墙壁设为 Ignore Raycast 层。")]
-    public int objectLayerIndex = 0; 
+    [Tooltip("生成的墙壁 GameObject 所在的图层名称 (例如 Default, Ignore Raycast, Water)。\n请输入准确的图层名称。")]
+    public string colliderLayer = "Default"; 
 
-    [Tooltip("【包含层】碰撞体只与选中的层发生碰撞。\nUnity 默认逻辑为 Everything，此处根据需求默认为 Default。")]
-    public LayerMask includeLayers = 1; // 1 = Default Layer (Bitmask)
+    [Space(10)]
+    [Tooltip("【包含层】(Unity 2022+) 覆盖全局碰撞矩阵。\n碰撞体只与选中的层发生碰撞。如果不勾选任何层，则不会与任何物体碰撞。")]
+    public LayerMask includeLayers = -1; // -1 代表 Everything (默认与所有层碰撞)
 
-    [Tooltip("【排除层】碰撞体将忽略选中层的碰撞。\n默认为 Nothing。")]
-    public LayerMask excludeLayers = 0; // 0 = Nothing
+    [Tooltip("【排除层】(Unity 2022+) 覆盖全局碰撞矩阵。\n碰撞体将忽略选中层的碰撞。")]
+    public LayerMask excludeLayers = 0; // 0 代表 Nothing
 
     [Header("调试与预览")]
     public bool drawGizmos = true;
@@ -46,6 +47,10 @@ public class CameraBounds : MonoBehaviour
     private Transform currentContainer;
     private Dictionary<string, BoxCollider> walls = new Dictionary<string, BoxCollider>();
     private Camera lastFrameCamera;
+
+    // 缓存图层ID，避免每帧 String 转 Int
+    private int cachedLayerID = 0;
+    private string lastFrameLayerName = "";
 
     // 数据结构
     private struct WallData
@@ -58,8 +63,9 @@ public class CameraBounds : MonoBehaviour
     private void Reset()
     {
         targetCamera = GetComponent<Camera>();
-        // Reset 时将 includeLayers 设为 Default (mask = 1)
-        includeLayers = 1;
+        colliderLayer = "Default";
+        // 默认 Include 为 Everything (-1)，这样默认行为才符合直觉（挡住所有东西）
+        includeLayers = -1; 
         excludeLayers = 0;
     }
 
@@ -84,19 +90,37 @@ public class CameraBounds : MonoBehaviour
             HandleCameraChange();
         }
 
-        // 2. 容器管理
+        // 2. 检查图层名称变更 (缓存 ID 以提升性能)
+        if (colliderLayer != lastFrameLayerName)
+        {
+            UpdateLayerID();
+        }
+
+        // 3. 容器管理
         if (currentContainer == null) CreateContainer();
         if (!currentContainer.gameObject.activeSelf) currentContainer.gameObject.SetActive(true);
 
-        // 3. 更新碰撞体
+        // 4. 更新碰撞体
         UpdateColliders();
 
         lastFrameCamera = targetCamera;
     }
 
     /// <summary>
-    /// 纯数学计算：算出墙壁位置和大小
+    /// 将字符串图层名转换为 int ID，并处理无效名称
     /// </summary>
+    private void UpdateLayerID()
+    {
+        int id = LayerMask.NameToLayer(colliderLayer);
+        if (id == -1)
+        {
+            Debug.LogWarning($"[CameraBounds] 找不到名为 '{colliderLayer}' 的图层！已回退到 Default 层。请检查拼写。");
+            id = 0; // Default
+        }
+        cachedLayerID = id;
+        lastFrameLayerName = colliderLayer;
+    }
+
     private Dictionary<string, WallData> CalculateWallData()
     {
         var data = new Dictionary<string, WallData>();
@@ -141,9 +165,6 @@ public class CameraBounds : MonoBehaviour
         return data;
     }
 
-    /// <summary>
-    /// 运行时逻辑：同步 Collider 参数
-    /// </summary>
     private void UpdateColliders()
     {
         var dataMap = CalculateWallData();
@@ -179,14 +200,13 @@ public class CameraBounds : MonoBehaviour
             box.transform.localRotation = Quaternion.identity;
             box.transform.localScale = Vector3.one;
 
-            // 2. 层级设置 (实时更新，允许运行时调整)
-            if (box.gameObject.layer != objectLayerIndex)
+            // 2. 图层设置 (使用缓存的ID)
+            if (box.gameObject.layer != cachedLayerID)
             {
-                box.gameObject.layer = objectLayerIndex;
+                box.gameObject.layer = cachedLayerID;
             }
 
             // 3. Layer Overrides (Unity 2022.2+ API)
-            // 只有当值发生变化时才赋值，减少 overhead
             if (box.includeLayers != includeLayers) box.includeLayers = includeLayers;
             if (box.excludeLayers != excludeLayers) box.excludeLayers = excludeLayers;
         }
@@ -237,8 +257,8 @@ public class CameraBounds : MonoBehaviour
         GameObject go = new GameObject("Wall_" + name);
         go.transform.SetParent(currentContainer);
         
-        // 初始设置 Layer
-        go.layer = objectLayerIndex;
+        // 初始设置 Layer (使用缓存ID)
+        go.layer = cachedLayerID;
 
         BoxCollider box = go.AddComponent<BoxCollider>();
         box.material = physicsMaterial;

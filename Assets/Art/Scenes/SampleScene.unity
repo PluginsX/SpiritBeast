@@ -689,14 +689,14 @@ MonoBehaviour:
   enableBottom: 1
   enableLeft: 1
   enableRight: 1
-  enableNear: 0
-  enableFar: 0
+  enableNear: 1
+  enableFar: 1
   wallThickness: 0.5
   physicsMaterial: {fileID: 0}
-  objectLayerIndex: 0
+  colliderLayer: Environment
   includeLayers:
     serializedVersion: 2
-    m_Bits: 1
+    m_Bits: 0
   excludeLayers:
     serializedVersion: 2
     m_Bits: 0
@@ -1448,8 +1448,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ad1c80ad957a51547acdc7df2ba4f7a7, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  maxDragSpeed: 40
+  dragAngularDrag: 10
+  freezeRotationOnDrag: 0
   maxThrowSpeed: 10
-  targetCamera: {fileID: 0}
+  targetCamera: {fileID: 330585545}
 --- !u!1 &782184890
 GameObject:
   m_ObjectHideFlags: 0
@@ -7620,6 +7623,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ad1c80ad957a51547acdc7df2ba4f7a7, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  maxDragSpeed: 40
+  dragAngularDrag: 10
+  freezeRotationOnDrag: 0
   maxThrowSpeed: 5
   targetCamera: {fileID: 330585545}
 --- !u!1 &2101246828 stripped
@@ -7689,6 +7695,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ad1c80ad957a51547acdc7df2ba4f7a7, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  maxDragSpeed: 40
+  dragAngularDrag: 10
+  freezeRotationOnDrag: 0
   maxThrowSpeed: 10
   targetCamera: {fileID: 330585545}
 --- !u!114 &2101246838
@@ -7768,7 +7777,7 @@ Rigidbody:
   m_UseGravity: 1
   m_IsKinematic: 0
   m_Interpolate: 0
-  m_Constraints: 120
+  m_Constraints: 8
   m_CollisionDetection: 0
 --- !u!1 &2123451638
 GameObject:

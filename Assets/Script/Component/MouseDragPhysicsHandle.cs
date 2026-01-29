@@ -1,30 +1,49 @@
 using UnityEngine;
 
 /// <summary>
-/// 实现鼠标拖拽刚体对象的物理手柄。
-/// 特性：零延迟跟手，松手时继承加速度进行投掷。
+/// 物理拖拽手柄 - 终极版
+/// 特性：
+/// 1. 0延迟跟手（在无障碍时）。
+/// 2. 完美的物理碰撞（不会穿墙）。
+/// 3. 自动防止穿出屏幕边界（配合 CameraBounds）。
+/// 4. 丝滑的 1:1 控制与拉力模式切换。
 /// </summary>
 [RequireComponent(typeof(Rigidbody))]
 public class MouseDragPhysicsHandle : MonoBehaviour
 {
-    [Header("设置")]
-    [Tooltip("松手时的最大投掷速度限制 (m/s)")]
-    public float maxThrowSpeed = 10.0f; // 稍微调大一点，因为瞬时移动产生的速度通常较快
+    [Header("拖拽参数")]
+    [Tooltip("最大拖拽速度 (m/s)。\n决定了'拉力模式'的强度，也防止物体因速度过快穿透墙壁。\n建议值：20 ~ 50")]
+    public float maxDragSpeed = 40.0f;
 
-    [Tooltip("用于坐标转换的摄像机，为空自动获取主摄像机")]
+    [Tooltip("拖拽时的旋转阻尼。\n设大一点(如 5-10)可以防止拖拽时物体疯狂自旋。")]
+    public float dragAngularDrag = 10.0f;
+
+    [Tooltip("是否在拖拽时冻结旋转？\n对于某些物体，拖拽时保持角度可能手感更好。")]
+    public bool freezeRotationOnDrag = false;
+
+    [Tooltip("松手时的投掷速度限制")]
+    public float maxThrowSpeed = 15.0f;
+
+    [Header("引用")]
+    [Tooltip("用于坐标转换的摄像机")]
     public Camera targetCamera;
 
     // --- 内部变量 ---
     private Rigidbody rb;
     private bool isDragging = false;
     
-    // 坐标转换相关
-    private Vector3 offsetVector; // 记录抓取点相对于物体中心的偏移
-    private float zDistance;      // 物体距离摄像机的深度平面
-    
-    // 速度计算相关
-    private Vector3 previousPosition;
-    private Vector3 currentVelocity; // 实时计算的拖拽速度
+    // 坐标相关
+    private Vector3 offsetVector; 
+    private float zDistance;      
+
+    // 物理状态备份（用于松手恢复）
+    private float originalAngularDrag;
+    private bool originalUseGravity;
+    private CollisionDetectionMode originalCollisionMode;
+    private RigidbodyConstraints originalConstraints;
+
+    // 速度计算（用于投掷）
+    private Vector3 currentVelocityForThrow; 
 
     private void Awake()
     {
@@ -34,100 +53,131 @@ public class MouseDragPhysicsHandle : MonoBehaviour
 
     private void Update()
     {
-        // 只有在拖拽状态下才执行跟随逻辑
+        // 我们只在 Update 里处理输入坐标转换，物理移动全部放 FixedUpdate
         if (isDragging && targetCamera != null)
         {
-            HandleDragInstant();
+            UpdateDragTarget();
         }
+    }
+
+    private void FixedUpdate()
+    {
+        // 物理核心逻辑
+        if (isDragging)
+        {
+            ApplyVelocityControl();
+        }
+    }
+
+    // 目标世界坐标
+    private Vector3 targetWorldPos;
+
+    /// <summary>
+    /// 计算鼠标对应的目标位置
+    /// </summary>
+    private void UpdateDragTarget()
+    {
+        Vector3 mouseScreenPos = Input.mousePosition;
+        mouseScreenPos.z = zDistance;
+        Vector3 mouseWorldPos = targetCamera.ScreenToWorldPoint(mouseScreenPos);
+        targetWorldPos = mouseWorldPos + offsetVector;
     }
 
     /// <summary>
-    /// 核心逻辑：瞬时跟随鼠标
+    /// 核心物理控制逻辑
     /// </summary>
-    private void HandleDragInstant()
+    private void ApplyVelocityControl()
     {
-        // 1. 获取当前鼠标位置并还原深度
-        Vector3 mouseScreenPos = Input.mousePosition;
-        mouseScreenPos.z = zDistance;
+        // 1. 计算从当前位置到目标位置的向量
+        Vector3 directionToTarget = targetWorldPos - rb.position;
+        
+        // 2. 计算这一帧需要多快的速度才能正好到达目标点
+        // 速度 = 距离 / 时间
+        Vector3 desiredVelocity = directionToTarget / Time.fixedDeltaTime;
 
-        // 2. 转换为世界坐标
-        Vector3 mouseWorldPos = targetCamera.ScreenToWorldPoint(mouseScreenPos);
+        // 3. 【防穿模关键点】限制最大速度
+        // 如果需要的速度太快（说明鼠标移动太快，或者被墙挡住了导致距离拉大），
+        // 我们就截断速度。这就自然形成了“拉力模式”。
+        // 如果需要的速度很小（说明鼠标就在边上），我们就不截断，这就形成了“位置模式”。
+        Vector3 finalVelocity = Vector3.ClampMagnitude(desiredVelocity, maxDragSpeed);
 
-        // 3. 计算目标位置 (鼠标位置 + 抓取时的偏移量)
-        Vector3 targetPos = mouseWorldPos + offsetVector;
+        // 4. 应用速度
+        // 直接修改 Velocity 是物理引擎中最接近“上帝之手”又保留碰撞的方法
+        rb.velocity = finalVelocity;
 
-        // 4. 【关键点】瞬时移动，绝不迟疑
-        // 直接修改 Transform，忽略物理引擎的移动限制，实现"上帝之手"般的控制感
-        transform.position = targetPos;
-
-        // 5. 【后台计算】虽然位置是瞬移的，但我们必须计算速度用于投掷
-        // 速度 = (当前位置 - 上一帧位置) / 时间差
-        if (Time.deltaTime > 0)
-        {
-            Vector3 instantaneousVelocity = (targetPos - previousPosition) / Time.deltaTime;
-            
-            // 使用一点点平滑来计算“投掷意图”，避免因为鼠标回报率导致的数值剧烈抖动
-            // 0.2f 的系数意味着我们更看重当下的瞬时速度，但也保留了一点历史趋势
-            currentVelocity = Vector3.Lerp(currentVelocity, instantaneousVelocity, 0.2f);
-        }
-
-        // 更新上一帧位置用于下一次计算
-        previousPosition = targetPos;
+        // 记录速度用于 Update 中的逻辑或 Debug
+        currentVelocityForThrow = rb.velocity;
     }
 
     // =========================================================
-    // 对外提供的事件响应函数
+    // 事件响应
     // =========================================================
 
     public void OnStartDrag()
     {
         if (targetCamera == null) return;
-
         isDragging = true;
-        
-        // 1. 开启 Kinematic：完全接管物理，不再受重力和碰撞反弹影响
-        rb.isKinematic = true; 
-        rb.velocity = Vector3.zero;
-        rb.angularVelocity = Vector3.zero;
 
-        // 2. 锁定深度 zDistance
+        // --- 1. 备份原始物理状态 ---
+        originalUseGravity = rb.useGravity;
+        originalAngularDrag = rb.angularDrag;
+        originalCollisionMode = rb.collisionDetectionMode;
+        originalConstraints = rb.constraints;
+
+        // --- 2. 设置适合拖拽的物理状态 ---
+        
+        // 关闭重力，否则拿起来会往下掉
+        rb.useGravity = false; 
+        
+        // 【关键】保持 isKinematic = false
+        // 只有非运动学刚体才会和墙壁发生物理碰撞。如果开了 Kinematic，它就会穿墙。
+        rb.isKinematic = false; 
+
+        // 增加旋转阻尼，防止拿起来像陀螺一样转
+        rb.angularDrag = dragAngularDrag;
+
+        // 【关键】开启连续碰撞检测
+        // 防止在快速拖拽（拉力模式）时因为速度太快穿透墙壁（Tunneling）
+        rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+        if (freezeRotationOnDrag)
+        {
+            rb.constraints = RigidbodyConstraints.FreezeRotation;
+        }
+
+        // --- 3. 计算抓取偏移 ---
         Vector3 screenPos = targetCamera.WorldToScreenPoint(transform.position);
         zDistance = screenPos.z;
-
-        // 3. 锁定偏移 Offset
-        // 这样你抓哪里，物体就固定在哪里，不会中心跳变
         Vector3 mouseWorldPos = targetCamera.ScreenToWorldPoint(new Vector3(Input.mousePosition.x, Input.mousePosition.y, zDistance));
         offsetVector = transform.position - mouseWorldPos;
-        
-        // 初始化速度计算变量
-        previousPosition = transform.position;
-        currentVelocity = Vector3.zero;
+
+        // 初始化目标位置，防止第一帧跳变
+        targetWorldPos = transform.position;
     }
 
     public void OnStopDrag()
     {
         if (!isDragging) return;
-
         isDragging = false;
 
-        // 1. 恢复物理模拟
-        rb.isKinematic = false;
+        // --- 1. 恢复原始物理状态 ---
+        rb.useGravity = originalUseGravity;
+        rb.angularDrag = originalAngularDrag;
+        rb.collisionDetectionMode = originalCollisionMode;
+        rb.constraints = originalConstraints;
 
-        // 2. 限制最大速度 (防止穿模或飞出宇宙)
-        if (currentVelocity.magnitude > maxThrowSpeed)
-        {
-            currentVelocity = currentVelocity.normalized * maxThrowSpeed;
-        }
-
-        // 3. 应用刚才在后台计算好的速度
-        // 这里有一个小技巧：如果速度非常小，可能是用户只是想轻轻放下
-        if (currentVelocity.magnitude < 0.1f)
+        // --- 2. 处理投掷 ---
+        // 限制最大投掷速度
+        Vector3 throwVelocity = Vector3.ClampMagnitude(rb.velocity, maxThrowSpeed);
+        
+        // 细微体验优化：如果速度极小，直接归零，防止物体在桌面上缓慢滑动
+        if (throwVelocity.magnitude < 0.1f)
         {
             rb.velocity = Vector3.zero;
         }
         else
         {
-            rb.velocity = currentVelocity;
+            rb.velocity = throwVelocity;
         }
     }
 }
