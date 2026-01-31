@@ -2,16 +2,16 @@ using UnityEngine;
 using UnityEngine.Events;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 
 // 引入 Windows Forms 依赖
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
 using System.Drawing;
 using System.Windows.Forms;
-using System.Runtime.InteropServices;
 #endif
 
 /// <summary>
-/// 托盘应用管理器 (深色极简主题版)
+/// 托盘与任务栏管理器 (集成深色菜单、流式资源加载、任务栏控制)
 /// </summary>
 public class PalletProgramManager : MonoBehaviour
 {
@@ -22,37 +22,130 @@ public class PalletProgramManager : MonoBehaviour
         public UnityEvent onClickEvent;
     }
 
-    [Header("核心设置")]
+    // ========================================================================
+    // 配置区域
+    // ========================================================================
+    [Header("1. 托盘设置 (Tray)")]
+    [Tooltip("是否在右下角托盘显示图标")]
     public bool showInTray = true;
-    
-    [Tooltip("图标文件名 (Assets/StreamingAssets/ 下的文件名)")]
-    public string iconFileName = "icon.ico";
+    [Tooltip("托盘图标文件名 (StreamingAssets下)")]
+    public string trayIconFileName = "icon.ico";
     public string hoverTooltip = "我的应用";
 
-    [Header("交互配置")]
+    [Header("2. 任务栏设置 (Taskbar)")]
+    [Tooltip("是否在下方任务栏显示标签")]
+    public bool showInTaskbar = true;
+    [Tooltip("任务栏图标文件名 (StreamingAssets下)。\n留空则与托盘图标一致。")]
+    public string taskbarIconFileName = ""; 
+
+    [Header("3. 交互配置")]
     public UnityEvent onDoubleClickIcon;
     public List<TrayMenuItem> rightClickMenu = new List<TrayMenuItem>();
 
+    // ========================================================================
+    // 内部变量
+    // ========================================================================
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
     private NotifyIcon _notifyIcon;
     private ContextMenuStrip _contextMenu;
+    private System.Drawing.Icon _taskbarIconRef; // 保持引用防止GC回收
 
+    // --- Windows API 声明 ---
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool DestroyIcon(System.IntPtr hIcon);
+
+    [DllImport("user32.dll")]
+    static extern System.IntPtr GetActiveWindow();
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
+    static extern int SetWindowLong32(System.IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+    static extern System.IntPtr SetWindowLongPtr64(System.IntPtr hWnd, int nIndex, System.IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    static extern System.IntPtr GetWindowLong(System.IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
+    static extern System.IntPtr SendMessage(System.IntPtr hWnd, int Msg, System.IntPtr wParam, System.IntPtr lParam);
+
+    // 常量定义
+    const int GWL_EXSTYLE = -20;
+    const int WS_EX_APPWINDOW = 0x00040000;  // 强制显示在任务栏
+    const int WS_EX_TOOLWINDOW = 0x00000080; // 工具窗口(不显示在任务栏)
+    
+    const int WM_SETICON = 0x0080;
+    const int ICON_SMALL = 0;
+    const int ICON_BIG = 1;
 #endif
 
     private void Start()
     {
         UnityMainThreadDispatcher.Instance();
+
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
+        // 1. 初始化托盘
         if (showInTray) InitializeTrayIcon();
+
+        // 2. 初始化任务栏配置 (图标 + 显隐)
+        ApplyTaskbarSettings();
 #endif
     }
 
     private void OnApplicationQuit() => DisposeTrayIcon();
     private void OnDestroy() => DisposeTrayIcon();
 
+    // ========================================================================
+    // 任务栏管理 (Taskbar Logic)
+    // ========================================================================
+    public void ApplyTaskbarSettings()
+    {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        // 编辑器模式下修改窗口样式会导致编辑器异常，仅在打包后执行
+        System.IntPtr hwnd = GetActiveWindow();
+        if (hwnd == System.IntPtr.Zero) return;
+
+        // --- A. 设置任务栏图标 ---
+        string iconName = string.IsNullOrEmpty(taskbarIconFileName) ? trayIconFileName : taskbarIconFileName;
+        _taskbarIconRef = LoadIconFromStreamingAssets(iconName);
+        
+        if (_taskbarIconRef != null)
+        {
+            // 同时设置大图标(Alt+Tab)和小图标(任务栏)
+            SendMessage(hwnd, WM_SETICON, (System.IntPtr)ICON_SMALL, _taskbarIconRef.Handle);
+            SendMessage(hwnd, WM_SETICON, (System.IntPtr)ICON_BIG, _taskbarIconRef.Handle);
+        }
+
+        // --- B. 设置任务栏显隐 ---
+        // 获取当前扩展样式
+        // 注意：兼容 x86 和 x64
+        long style = GetWindowLong(hwnd, GWL_EXSTYLE).ToInt64();
+
+        if (showInTaskbar)
+        {
+            // 显示：移除工具窗口属性，添加APP窗口属性
+            style &= ~WS_EX_TOOLWINDOW;
+            style |= WS_EX_APPWINDOW;
+        }
+        else
+        {
+            // 隐藏：添加工具窗口属性，移除APP窗口属性
+            style |= WS_EX_TOOLWINDOW;
+            style &= ~WS_EX_APPWINDOW;
+        }
+
+        // 应用样式
+        if (System.IntPtr.Size == 8)
+            SetWindowLongPtr64(hwnd, GWL_EXSTYLE, (System.IntPtr)style);
+        else
+            SetWindowLong32(hwnd, GWL_EXSTYLE, (int)style);
+#endif
+    }
+
+    // ========================================================================
+    // 托盘管理 (Tray Logic)
+    // ========================================================================
     public void InitializeTrayIcon()
     {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
@@ -60,7 +153,7 @@ public class PalletProgramManager : MonoBehaviour
         {
             if (_notifyIcon == null) _notifyIcon = new NotifyIcon();
 
-            _notifyIcon.Icon = LoadIconFromStreamingAssets();
+            _notifyIcon.Icon = LoadIconFromStreamingAssets(trayIconFileName);
             _notifyIcon.Text = hoverTooltip;
             _notifyIcon.Visible = true;
 
@@ -81,16 +174,14 @@ public class PalletProgramManager : MonoBehaviour
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
         _contextMenu = new ContextMenuStrip();
         
-        // --- 1. 应用深色主题渲染器 ---
+        // 深色主题渲染
         _contextMenu.Renderer = new ToolStripProfessionalRenderer(new DarkColorTable());
         
-        // --- 2. 样式微调 ---
-        _contextMenu.ShowImageMargin = false; // 去除左侧图标栏，实现极简对齐
-        _contextMenu.BackColor = System.Drawing.Color.FromArgb(45, 45, 48); // 背景深灰
-        _contextMenu.ForeColor = System.Drawing.Color.White;             // 全局字体白色
-        _contextMenu.ShowCheckMargin = false;             // 去除勾选栏
-        
-        // 字体设置 (可选，使用系统默认无衬线字体)
+        // 样式微调
+        _contextMenu.ShowImageMargin = false; 
+        _contextMenu.BackColor = System.Drawing.Color.FromArgb(45, 45, 48); 
+        _contextMenu.ForeColor = System.Drawing.Color.White;             
+        _contextMenu.ShowCheckMargin = false;
         _contextMenu.Font = new System.Drawing.Font("Segoe UI", 9F);
 
         foreach (var item in rightClickMenu)
@@ -100,18 +191,15 @@ public class PalletProgramManager : MonoBehaviour
             var menuItem = new ToolStripMenuItem(item.menuText);
             var evt = item.onClickEvent;
 
-            // 确保每个 Item 继承字体颜色 (WinForms 有时会重置)
             menuItem.ForeColor = System.Drawing.Color.White; 
-            
             menuItem.Click += (s, e) => 
                 UnityMainThreadDispatcher.Instance().Enqueue(() => evt?.Invoke());
             
             _contextMenu.Items.Add(menuItem);
         }
 
-        // 分割线样式
         ToolStripSeparator sep = new ToolStripSeparator();
-        sep.ForeColor = System.Drawing.Color.FromArgb(80, 80, 80); // 深色分割线
+        sep.ForeColor = System.Drawing.Color.FromArgb(80, 80, 80);
         _contextMenu.Items.Add(sep);
 
         var exitItem = new ToolStripMenuItem("退出");
@@ -129,17 +217,19 @@ public class PalletProgramManager : MonoBehaviour
 #endif
     }
 
-    // ... (LoadIconFromStreamingAssets 代码保持不变，省略以节省篇幅，请保留之前的版本) ...
+    // ========================================================================
+    // 资源加载 (StreamingAssets)
+    // ========================================================================
     private
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
     System.Drawing.Icon
 #else
     object
 #endif
-    LoadIconFromStreamingAssets()
+    LoadIconFromStreamingAssets(string fileName)
     {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
-        string fullPath = Path.Combine(UnityEngine.Application.streamingAssetsPath, iconFileName);
+        string fullPath = Path.Combine(UnityEngine.Application.streamingAssetsPath, fileName);
         if (!File.Exists(fullPath)) return GetDefaultIcon();
         try {
             if (fullPath.EndsWith(".ico", System.StringComparison.OrdinalIgnoreCase)) return new System.Drawing.Icon(fullPath);
@@ -182,39 +272,27 @@ public class PalletProgramManager : MonoBehaviour
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
         if (_notifyIcon != null) { _notifyIcon.Visible = false; _notifyIcon.Dispose(); _notifyIcon = null; }
         if (_contextMenu != null) { _contextMenu.Dispose(); _contextMenu = null; }
+        if (_taskbarIconRef != null) { _taskbarIconRef.Dispose(); _taskbarIconRef = null; }
 #endif
     }
 
     // ==========================================
-    // 自定义深色主题渲染表
+    // 自定义深色主题渲染表 (Color 冲突已修复)
     // ==========================================
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR
     public class DarkColorTable : ProfessionalColorTable
     {
-        // 菜单背景色 (深灰)
         public override System.Drawing.Color ToolStripDropDownBackground => System.Drawing.Color.FromArgb(45, 45, 48);
-
-        // 鼠标悬停时的背景色 (稍亮一点的灰)
         public override System.Drawing.Color MenuItemSelected => System.Drawing.Color.FromArgb(62, 62, 66);
-
-        // 鼠标悬停时的边框色 (与背景同色，实现扁平化)
         public override System.Drawing.Color MenuItemBorder => System.Drawing.Color.FromArgb(62, 62, 66);
-
-        // 菜单边框色 (黑色)
         public override System.Drawing.Color MenuBorder => System.Drawing.Color.Black;
-        
-        // 鼠标按下时的背景色
         public override System.Drawing.Color MenuItemPressedGradientBegin => System.Drawing.Color.FromArgb(62, 62, 66);
         public override System.Drawing.Color MenuItemPressedGradientEnd => System.Drawing.Color.FromArgb(62, 62, 66);
-
-        // 屏蔽掉左侧图标栏的渐变 (使其纯色)
         public override System.Drawing.Color ImageMarginGradientBegin => System.Drawing.Color.FromArgb(45, 45, 48);
         public override System.Drawing.Color ImageMarginGradientMiddle => System.Drawing.Color.FromArgb(45, 45, 48);
         public override System.Drawing.Color ImageMarginGradientEnd => System.Drawing.Color.FromArgb(45, 45, 48);
-        
-        // 分割线颜色
         public override System.Drawing.Color SeparatorDark => System.Drawing.Color.FromArgb(80, 80, 80);
-        public override System.Drawing.Color SeparatorLight => System.Drawing.Color.FromArgb(45, 45, 48); // 隐藏高光
+        public override System.Drawing.Color SeparatorLight => System.Drawing.Color.FromArgb(45, 45, 48);
     }
 #endif
 }
