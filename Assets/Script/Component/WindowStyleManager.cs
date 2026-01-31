@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
@@ -28,6 +29,10 @@ public class WindowStyleManager : MonoBehaviour
         [Header("窗口置顶（仅窗口模式有效）")]
         public bool isAlwaysOnTop = false;
 
+        [Header("窗口交互（仅窗口模式有效）")]
+        public bool movable = true;
+        public bool snapToEdges = true;
+
         public enum InteractionType
         {
             Collider,
@@ -54,6 +59,23 @@ public class WindowStyleManager : MonoBehaviour
     
     // 当前激活的窗口配置
     private WindowsStyleConfig currentConfig;
+
+    // 保存的窗口位置（用于从全屏切换回窗口时恢复）
+    private Vector2Int savedWindowPosition = new Vector2Int(100, 100);
+
+    // ==================== 拖拽状态 ====================
+    private bool isDragging = false;
+    private bool isMouseDown = false;
+    private float mouseDownTime;
+    private Vector2Int mouseDownCursorPos;
+    private float lastDragEventTime;
+    private Vector2Int dragOffset;
+    private Coroutine snapCoroutine;
+
+    // ==================== 拖拽设置 ====================
+    private float maxClickDuration = 0.2f;
+    private float dragFrequency = 30f;
+    private float snapSmoothTime = 0.12f;
 
     // ==================== Win32 常量 ====================
     const int GWL_STYLE = -16;
@@ -103,6 +125,12 @@ public class WindowStyleManager : MonoBehaviour
     [DllImport("dwmapi.dll")]
     static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS margins);
 
+    // ==================== 拖拽相关 API ====================
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT lpPoint);
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
     const uint SWP_NOSIZE = 0x0001;
     const uint SWP_NOMOVE = 0x0002;
     const uint SWP_NOZORDER = 0x0004;
@@ -123,9 +151,47 @@ public class WindowStyleManager : MonoBehaviour
         public int bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int x; public int y; }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+
     // ==================== WndProc Hook ====================
     private IntPtr oldWndProc;
     private WndProcDelegate newWndProc;
+
+    // ==================== 窗口位置和光标位置 ====================
+    private Vector2Int GetWindowPosition()
+    {
+        if (windowHandle == IntPtr.Zero) return Vector2Int.zero;
+        GetWindowRect(windowHandle, out RECT rect);
+        return new Vector2Int(rect.Left, rect.Top);
+    }
+
+    private Vector2Int GetCursorPosition()
+    {
+        GetCursorPos(out POINT p);
+        return new Vector2Int(p.x, p.y);
+    }
+
+    private void MoveWindow(int x, int y)
+    {
+        if (windowHandle == IntPtr.Zero) return;
+        SetWindowPos(windowHandle, IntPtr.Zero, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010 | 0x0400);
+    }
+
+    private MONITORINFO GetCurrentMonitorInfo()
+    {
+        if (windowHandle == IntPtr.Zero) return new MONITORINFO();
+        IntPtr monitor = MonitorFromWindow(windowHandle, 2);
+        MONITORINFO mi = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
+        GetMonitorInfo(monitor, ref mi);
+        return mi;
+    }
 
     private delegate IntPtr WndProcDelegate(
         IntPtr hWnd,
@@ -165,11 +231,107 @@ public class WindowStyleManager : MonoBehaviour
             return;
 
         HandleClickThrough();
+        HandleMouseInput();
+    }
+
+    private void HandleMouseInput()
+    {
+        // 仅在窗口模式且可移动时处理拖拽
+        if (currentConfig == null || currentConfig.isFullscreen || !currentConfig.movable)
+            return;
+
+        // 检查鼠标是否在可交互区域
+        bool canInteract = CheckInteraction();
+
+        // 鼠标按下
+        if (Input.GetMouseButtonDown(0))
+        {
+            if (canInteract)
+            {
+                isMouseDown = true;
+                mouseDownTime = Time.time;
+                mouseDownCursorPos = GetCursorPosition();
+                dragOffset = GetCursorPosition() - GetWindowPosition();
+            }
+        }
+
+        // 鼠标按下并移动
+        if (isMouseDown && Input.GetMouseButton(0))
+        {
+            float duration = Time.time - mouseDownTime;
+            float dist = Vector2.Distance(mouseDownCursorPos, GetCursorPosition());
+
+            // 触发拖拽
+            if (!isDragging && (duration > maxClickDuration || dist > 5f))
+            {
+                isDragging = true;
+                if (snapCoroutine != null) StopCoroutine(snapCoroutine);
+            }
+
+            // 正在拖拽
+            if (isDragging)
+            {
+                Vector2Int newPos = GetCursorPosition() - dragOffset;
+                MoveWindow(newPos.x, newPos.y);
+                if (Time.time - lastDragEventTime > 1f / dragFrequency)
+                {
+                    lastDragEventTime = Time.time;
+                }
+            }
+        }
+
+        // 鼠标释放
+        if (isMouseDown && Input.GetMouseButtonUp(0))
+        {
+            if (isDragging)
+            {
+                isDragging = false;
+                if (currentConfig.snapToEdges)
+                    snapCoroutine = StartCoroutine(DoElasticSnap());
+            }
+            isMouseDown = false;
+        }
     }
 
     void OnApplicationQuit()
     {
         isQuitting = true;
+    }
+
+    private IEnumerator DoElasticSnap()
+    {
+        if (currentConfig == null || currentConfig.isFullscreen || !currentConfig.snapToEdges)
+            yield break;
+
+        Vector2Int currentPos = GetWindowPosition();
+        MONITORINFO monitorInfo = GetCurrentMonitorInfo();
+        
+        // 计算窗口大小
+        int windowWidth = currentConfig.windowSize.x;
+        int windowHeight = currentConfig.windowSize.y;
+        
+        // 计算目标位置（吸附到屏幕边缘）
+        int targetX = Mathf.Clamp(currentPos.x, monitorInfo.rcWork.Left, monitorInfo.rcWork.Right - windowWidth);
+        int targetY = Mathf.Clamp(currentPos.y, monitorInfo.rcWork.Top, monitorInfo.rcWork.Bottom - windowHeight);
+        
+        // 如果位置没有变化，直接返回
+        if (targetX == currentPos.x && targetY == currentPos.y)
+            yield break;
+
+        // 使用平滑阻尼算法实现弹性效果
+        Vector2 targetVec = new Vector2(targetX, targetY);
+        Vector2 currentFloatPos = new Vector2(currentPos.x, currentPos.y);
+        Vector2 velocity = Vector2.zero;
+        
+        while (Vector2.Distance(currentFloatPos, targetVec) > 0.5f)
+        {
+            currentFloatPos = Vector2.SmoothDamp(currentFloatPos, targetVec, ref velocity, snapSmoothTime);
+            MoveWindow((int)currentFloatPos.x, (int)currentFloatPos.y);
+            yield return null;
+        }
+        
+        // 确保最终位置准确
+        MoveWindow(targetX, targetY);
     }
 
     // ==================== Public API ====================
@@ -198,7 +360,10 @@ public class WindowStyleManager : MonoBehaviour
             enableTransparent = newConfig.enableTransparent,
             enableClickThrough = newConfig.enableClickThrough,
             interactionType = newConfig.interactionType,
-            interactionLayerMask = newConfig.interactionLayerMask
+            interactionLayerMask = newConfig.interactionLayerMask,
+            isAlwaysOnTop = newConfig.isAlwaysOnTop,
+            movable = newConfig.movable,
+            snapToEdges = newConfig.snapToEdges
         };
 
 #if !UNITY_EDITOR
@@ -232,7 +397,9 @@ public class WindowStyleManager : MonoBehaviour
             enableClickThrough = styleConfigs[index].enableClickThrough,
             interactionType = styleConfigs[index].interactionType,
             interactionLayerMask = styleConfigs[index].interactionLayerMask,
-            isAlwaysOnTop = styleConfigs[index].isAlwaysOnTop
+            isAlwaysOnTop = styleConfigs[index].isAlwaysOnTop,
+            movable = styleConfigs[index].movable,
+            snapToEdges = styleConfigs[index].snapToEdges
         };
 
 #if !UNITY_EDITOR
@@ -303,7 +470,7 @@ public class WindowStyleManager : MonoBehaviour
             // 窗口模式（包括透明全屏模拟）
             if (currentConfig.hasBorder)
             {
-                style =
+                style = 
                     WS_OVERLAPPED |
                     WS_CAPTION |
                     WS_SYSMENU |
@@ -330,6 +497,18 @@ public class WindowStyleManager : MonoBehaviour
             exStyle &= ~WS_EX_LAYERED;
 
         SetWindowLongPtr64(windowHandle, GWL_EXSTYLE, (IntPtr)exStyle);
+
+        // 如果是窗口模式，初始化保存的窗口位置
+        if (!currentConfig.isFullscreen)
+        {
+            // 获取当前窗口位置
+            Vector2Int currentPos = GetWindowPosition();
+            // 如果当前位置不是默认值，使用当前位置作为保存的位置
+            if (currentPos != Vector2Int.zero)
+            {
+                savedWindowPosition = currentPos;
+            }
+        }
 
         // 设置窗口位置和大小
         SetWindowPosition();
@@ -367,25 +546,30 @@ public class WindowStyleManager : MonoBehaviour
 
         if (currentConfig.isFullscreen)
         {
-            // 全屏模式：设置为屏幕大小
-            var screen = Screen.currentResolution;
+            // 保存当前窗口位置
+            savedWindowPosition = GetWindowPosition();
+            
+            // 获取当前窗口所在显示器的信息
+            MONITORINFO monitorInfo = GetCurrentMonitorInfo();
             
             // 根据置顶选项决定窗口层级
             IntPtr hWndInsertAfter = currentConfig.isAlwaysOnTop ? 
                 (IntPtr)HWND_TOPMOST : 
                 (IntPtr)HWND_NOTOPMOST;
                 
+            // 全屏模式：设置为当前显示器大小
             SetWindowPos(
                 windowHandle,
                 hWndInsertAfter,
-                0, 0, // X, Y
-                screen.width, screen.height, // 宽度, 高度
+                monitorInfo.rcMonitor.Left, monitorInfo.rcMonitor.Top, // X, Y (当前显示器的左上角)
+                monitorInfo.rcMonitor.Right - monitorInfo.rcMonitor.Left, // 宽度
+                monitorInfo.rcMonitor.Bottom - monitorInfo.rcMonitor.Top, // 高度
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE
             );
         }
         else
         {
-            // 窗口模式：设置指定大小
+            // 窗口模式：设置指定大小和保存的位置
             IntPtr hWndInsertAfter = currentConfig.isAlwaysOnTop ? 
                 (IntPtr)HWND_TOPMOST : 
                 (IntPtr)HWND_NOTOPMOST;
@@ -393,7 +577,7 @@ public class WindowStyleManager : MonoBehaviour
             SetWindowPos(
                 windowHandle,
                 hWndInsertAfter,
-                100, 100, // X, Y
+                savedWindowPosition.x, savedWindowPosition.y, // X, Y (使用保存的位置)
                 currentConfig.windowSize.x, currentConfig.windowSize.y, // 宽度, 高度
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE
             );
