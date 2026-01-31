@@ -5,36 +5,17 @@ using UnityEngine;
 public class WindowStyleManagerEditor : Editor
 {
     SerializedProperty targetCameraProp;
-    SerializedProperty windowConfigProp;
-
-    // windowConfig 内部字段
-    SerializedProperty isFullscreenProp;
-    SerializedProperty windowSizeProp;
-    SerializedProperty hasBorderProp;
-    SerializedProperty resizableProp;
-    SerializedProperty enableTransparentProp;
-    SerializedProperty enableClickThroughProp;
-    SerializedProperty interactionTypeProp;
-    SerializedProperty interactionLayerMaskProp;
+    SerializedProperty styleConfigsProp;
+    SerializedProperty autoApplyStyleProp;
+    SerializedProperty defaultStyleIndexProp;
 
     void OnEnable()
     {
-        // 顶层
+        // 顶层属性
         targetCameraProp = serializedObject.FindProperty("targetCamera");
-        windowConfigProp = serializedObject.FindProperty("windowConfig");
-
-        if (windowConfigProp == null)
-            return;
-
-        // windowConfig 子字段（统一从 Relative 获取，避免路径错误）
-        isFullscreenProp        = windowConfigProp.FindPropertyRelative("isFullscreen");
-        windowSizeProp          = windowConfigProp.FindPropertyRelative("windowSize");
-        hasBorderProp           = windowConfigProp.FindPropertyRelative("hasBorder");
-        resizableProp           = windowConfigProp.FindPropertyRelative("resizable");
-        enableTransparentProp   = windowConfigProp.FindPropertyRelative("enableTransparent");
-        enableClickThroughProp  = windowConfigProp.FindPropertyRelative("enableClickThrough");
-        interactionTypeProp     = windowConfigProp.FindPropertyRelative("interactionType");
-        interactionLayerMaskProp= windowConfigProp.FindPropertyRelative("interactionLayerMask");
+        styleConfigsProp = serializedObject.FindProperty("styleConfigs");
+        autoApplyStyleProp = serializedObject.FindProperty("autoApplyStyle");
+        defaultStyleIndexProp = serializedObject.FindProperty("defaultStyleIndex");
     }
 
     public override void OnInspectorGUI()
@@ -48,113 +29,69 @@ public class WindowStyleManagerEditor : Editor
 
         EditorGUILayout.Space(6);
 
-        // ===== Window Config =====
-        EditorGUILayout.LabelField("Window Style", EditorStyles.boldLabel);
+        // ===== 样式配置 =====
+        EditorGUILayout.LabelField("样式配置", EditorStyles.boldLabel);
 
-        if (windowConfigProp == null)
+        if (styleConfigsProp != null)
         {
-            EditorGUILayout.HelpBox(
-                "windowConfig is missing or failed to serialize.",
-                MessageType.Error
-            );
-            serializedObject.ApplyModifiedProperties();
-            return;
-        }
-
-        // --- Fullscreen ---
-        if (isFullscreenProp != null)
-            EditorGUILayout.PropertyField(isFullscreenProp, new GUIContent("Fullscreen"));
-
-        bool isFullscreen = isFullscreenProp != null && isFullscreenProp.boolValue;
-
-        // --- Windowed-only options ---
-        if (!isFullscreen)
-        {
-            EditorGUI.indentLevel++;
-
-            if (windowSizeProp != null)
-                EditorGUILayout.PropertyField(windowSizeProp, new GUIContent("Window Size"));
-
-            if (hasBorderProp != null)
-                EditorGUILayout.PropertyField(hasBorderProp, new GUIContent("Has Border"));
-
-            bool hasBorder = hasBorderProp != null && hasBorderProp.boolValue;
-
-            if (hasBorder && resizableProp != null)
-            {
-                EditorGUI.indentLevel++;
-                EditorGUILayout.PropertyField(resizableProp, new GUIContent("Resizable"));
-                EditorGUI.indentLevel--;
-            }
-
-            EditorGUI.indentLevel--;
+            EditorGUILayout.PropertyField(styleConfigsProp);
         }
 
         EditorGUILayout.Space(6);
 
-        // ===== Transparency =====
-        EditorGUILayout.LabelField("Transparency", EditorStyles.boldLabel);
+        // ===== 自动应用样式 =====
+        EditorGUILayout.LabelField("自动应用样式", EditorStyles.boldLabel);
 
-        // 判断透明选项是否应该显示
-        // 透明选项只在以下前提至少有一个成立时才出现：
-        // 1. 全屏模式（此时默认就是无边框的）
-        // 2. 窗口模式，且无边框时
-        bool shouldShowTransparentOptions = isFullscreen || (!isFullscreen && hasBorderProp != null && !hasBorderProp.boolValue);
-
-        if (shouldShowTransparentOptions)
+        if (autoApplyStyleProp != null)
         {
-            if (enableTransparentProp != null)
-                EditorGUILayout.PropertyField(enableTransparentProp, new GUIContent("Enable Transparent"));
-
-            bool isTransparentEnabled = enableTransparentProp != null && enableTransparentProp.boolValue;
-
-            if (isTransparentEnabled)
+            EditorGUILayout.PropertyField(autoApplyStyleProp, new GUIContent("自动应用样式"));
+            
+            bool autoApply = autoApplyStyleProp.boolValue;
+            
+            if (autoApply)
             {
                 EditorGUI.indentLevel++;
-
-                if (enableClickThroughProp != null)
-                    EditorGUILayout.PropertyField(enableClickThroughProp, new GUIContent("Click Through"));
-
-                if (interactionTypeProp != null)
-                    EditorGUILayout.PropertyField(interactionTypeProp, new GUIContent("Interaction Type"));
-
-                if (interactionLayerMaskProp != null)
-                    EditorGUILayout.PropertyField(interactionLayerMaskProp, new GUIContent("Interaction Layer Mask"));
-
+                
+                if (styleConfigsProp != null && styleConfigsProp.arraySize > 0)
+                {
+                    if (defaultStyleIndexProp != null)
+                    {
+                        int maxIndex = styleConfigsProp.arraySize - 1;
+                        defaultStyleIndexProp.intValue = EditorGUILayout.IntSlider(
+                            new GUIContent("默认样式索引"),
+                            defaultStyleIndexProp.intValue,
+                            0,
+                            maxIndex
+                        );
+                        
+                        // 显示当前选中的样式名称（如果有）
+                        if (styleConfigsProp.arraySize > defaultStyleIndexProp.intValue)
+                        {
+                            var config = styleConfigsProp.GetArrayElementAtIndex(defaultStyleIndexProp.intValue);
+                            EditorGUILayout.LabelField("当前样式", $"索引: {defaultStyleIndexProp.intValue}");
+                        }
+                    }
+                }
+                else
+                {
+                    EditorGUILayout.HelpBox("请先添加至少一个样式配置。", MessageType.Warning);
+                }
+                
                 EditorGUI.indentLevel--;
             }
-        }
-        else
-        {
-            EditorGUILayout.HelpBox("透明选项仅在全屏模式或窗口模式且无边框时可用。", MessageType.Info);
         }
 
         EditorGUILayout.Space(6);
 
-        // ===== Window Topmost =====
-        EditorGUILayout.LabelField("Window Topmost", EditorStyles.boldLabel);
-
-        // 获取透明选项的值，用于置顶选项的判断
-        bool transparent = enableTransparentProp != null && enableTransparentProp.boolValue;
-
-        // 置顶选项只在以下两种情况下显示：
-        // 1. 全屏模式 + 透明（此时本质是窗口）
-        // 2. 窗口模式（无论是否透明）
-        bool shouldShowAlwaysOnTop = (!isFullscreen) || (isFullscreen && transparent);
-
-        if (shouldShowAlwaysOnTop)
-        {
-            if (windowConfigProp != null)
-            {
-                SerializedProperty isAlwaysOnTopProp = windowConfigProp.FindPropertyRelative("isAlwaysOnTop");
-                if (isAlwaysOnTopProp != null)
-                    EditorGUILayout.PropertyField(isAlwaysOnTopProp, new GUIContent("Always On Top"));
-            }
-        }
-        else
-        {
-            EditorGUILayout.HelpBox("置顶选项仅在窗口模式或透明全屏模式下可用。", MessageType.Info);
-        }
+        // ===== 使用说明 =====
+        EditorGUILayout.LabelField("使用说明", EditorStyles.boldLabel);
+        EditorGUILayout.HelpBox(
+            "1. 在样式配置列表中添加多个预设的窗口样式\n" +
+            "2. 勾选'自动应用样式'以在游戏运行时自动应用默认样式\n" +
+            "3. 使用 ChangeWindowStyleByIndex(index) API 在运行时切换样式\n" +
+            "4. 索引从0开始，对应样式配置列表中的位置",
+            MessageType.Info
+        );
 
         serializedObject.ApplyModifiedProperties();
     }

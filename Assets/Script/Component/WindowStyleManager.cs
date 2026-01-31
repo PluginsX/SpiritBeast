@@ -38,7 +38,11 @@ public class WindowStyleManager : MonoBehaviour
 
     // ==================== Inspector ====================
     public Camera targetCamera;
-    public WindowsStyleConfig windowConfig = new WindowsStyleConfig();
+    
+    [Header("样式配置")]
+    public List<WindowsStyleConfig> styleConfigs = new List<WindowsStyleConfig>();
+    public bool autoApplyStyle = false;
+    public int defaultStyleIndex = 0;
 
     // ==================== 状态 ====================
     private IntPtr windowHandle;
@@ -47,6 +51,9 @@ public class WindowStyleManager : MonoBehaviour
 
     private PointerEventData pointerEventData;
     private readonly List<RaycastResult> uiRaycastResults = new();
+    
+    // 当前激活的窗口配置
+    private WindowsStyleConfig currentConfig;
 
     // ==================== Win32 常量 ====================
     const int GWL_STYLE = -16;
@@ -139,7 +146,17 @@ public class WindowStyleManager : MonoBehaviour
 
     void Start()
     {
-        ApplyWindowStyle();
+        // 自动应用样式
+        if (autoApplyStyle && styleConfigs.Count > 0)
+        {
+            // 确保默认索引在有效范围内
+            defaultStyleIndex = Mathf.Clamp(defaultStyleIndex, 0, styleConfigs.Count - 1);
+            ChangeWindowStyleByIndex(defaultStyleIndex);
+        }
+        else
+        {
+            ApplyWindowStyle();
+        }
     }
 
     void Update()
@@ -172,7 +189,7 @@ public class WindowStyleManager : MonoBehaviour
             return;
 
         // 深拷贝，防止外部修改引用
-        windowConfig = new WindowsStyleConfig
+        currentConfig = new WindowsStyleConfig
         {
             isFullscreen = newConfig.isFullscreen,
             windowSize = newConfig.windowSize,
@@ -182,6 +199,40 @@ public class WindowStyleManager : MonoBehaviour
             enableClickThrough = newConfig.enableClickThrough,
             interactionType = newConfig.interactionType,
             interactionLayerMask = newConfig.interactionLayerMask
+        };
+
+#if !UNITY_EDITOR
+        ApplyWindowStyle();
+#endif
+    }
+
+    /// <summary>
+    /// 通过索引切换窗口样式
+    /// </summary>
+    /// <param name="index">样式配置在列表中的索引</param>
+    public void ChangeWindowStyleByIndex(int index)
+    {
+        if (index < 0 || index >= styleConfigs.Count)
+        {
+            Debug.LogWarning($"ChangeWindowStyleByIndex failed: index {index} is out of range. Valid range: 0-{styleConfigs.Count - 1}");
+            return;
+        }
+
+        if (!isInitialized || isQuitting)
+            return;
+
+        // 深拷贝，防止外部修改引用
+        currentConfig = new WindowsStyleConfig
+        {
+            isFullscreen = styleConfigs[index].isFullscreen,
+            windowSize = styleConfigs[index].windowSize,
+            hasBorder = styleConfigs[index].hasBorder,
+            resizable = styleConfigs[index].resizable,
+            enableTransparent = styleConfigs[index].enableTransparent,
+            enableClickThrough = styleConfigs[index].enableClickThrough,
+            interactionType = styleConfigs[index].interactionType,
+            interactionLayerMask = styleConfigs[index].interactionLayerMask,
+            isAlwaysOnTop = styleConfigs[index].isAlwaysOnTop
         };
 
 #if !UNITY_EDITOR
@@ -228,19 +279,19 @@ public class WindowStyleManager : MonoBehaviour
         long style;
 
         // 全屏模式且启用透明时，自动设置为无边框
-        if (windowConfig.isFullscreen && windowConfig.enableTransparent)
+        if (currentConfig.isFullscreen && currentConfig.enableTransparent)
         {
-            windowConfig.hasBorder = false;
+            currentConfig.hasBorder = false;
         }
 
         // 窗口模式且有边框时，自动禁用透明（因为透明选项被隐藏了）
-        if (!windowConfig.isFullscreen && windowConfig.hasBorder)
+        if (!currentConfig.isFullscreen && currentConfig.hasBorder)
         {
-            windowConfig.enableTransparent = false;
+            currentConfig.enableTransparent = false;
         }
 
         // 判断是否为独占全屏模式
-        bool isExclusiveFullscreen = windowConfig.isFullscreen && !windowConfig.enableTransparent;
+        bool isExclusiveFullscreen = currentConfig.isFullscreen && !currentConfig.enableTransparent;
 
         if (isExclusiveFullscreen)
         {
@@ -250,7 +301,7 @@ public class WindowStyleManager : MonoBehaviour
         else
         {
             // 窗口模式（包括透明全屏模拟）
-            if (windowConfig.hasBorder)
+            if (currentConfig.hasBorder)
             {
                 style =
                     WS_OVERLAPPED |
@@ -260,7 +311,7 @@ public class WindowStyleManager : MonoBehaviour
                     WS_MAXIMIZEBOX |
                     WS_VISIBLE;
 
-                if (windowConfig.resizable)
+                if (currentConfig.resizable)
                     style |= WS_THICKFRAME;
             }
             else
@@ -273,7 +324,7 @@ public class WindowStyleManager : MonoBehaviour
 
         long exStyle = (long)GetWindowLongPtr64(windowHandle, GWL_EXSTYLE);
 
-        if (windowConfig.enableTransparent)
+        if (currentConfig.enableTransparent)
             exStyle |= WS_EX_LAYERED;
         else
             exStyle &= ~WS_EX_LAYERED;
@@ -286,7 +337,7 @@ public class WindowStyleManager : MonoBehaviour
         ConfigureCamera();
 
         // 立即应用透明穿透设置
-        if (windowConfig.enableTransparent && windowConfig.enableClickThrough)
+        if (currentConfig.enableTransparent && currentConfig.enableClickThrough)
         {
             // 延迟一帧应用穿透设置，确保窗口样式已生效
             Invoke(nameof(ApplyClickThrough), 0.1f);
@@ -295,7 +346,7 @@ public class WindowStyleManager : MonoBehaviour
 
     void ApplyClickThrough()
     {
-        if (!windowConfig.enableTransparent || !windowConfig.enableClickThrough)
+        if (!currentConfig.enableTransparent || !currentConfig.enableClickThrough)
             return;
 
         bool hit = CheckInteraction();
@@ -314,13 +365,13 @@ public class WindowStyleManager : MonoBehaviour
     {
         if (windowHandle == IntPtr.Zero) return;
 
-        if (windowConfig.isFullscreen)
+        if (currentConfig.isFullscreen)
         {
             // 全屏模式：设置为屏幕大小
             var screen = Screen.currentResolution;
             
             // 根据置顶选项决定窗口层级
-            IntPtr hWndInsertAfter = windowConfig.isAlwaysOnTop ? 
+            IntPtr hWndInsertAfter = currentConfig.isAlwaysOnTop ? 
                 (IntPtr)HWND_TOPMOST : 
                 (IntPtr)HWND_NOTOPMOST;
                 
@@ -335,7 +386,7 @@ public class WindowStyleManager : MonoBehaviour
         else
         {
             // 窗口模式：设置指定大小
-            IntPtr hWndInsertAfter = windowConfig.isAlwaysOnTop ? 
+            IntPtr hWndInsertAfter = currentConfig.isAlwaysOnTop ? 
                 (IntPtr)HWND_TOPMOST : 
                 (IntPtr)HWND_NOTOPMOST;
                 
@@ -343,7 +394,7 @@ public class WindowStyleManager : MonoBehaviour
                 windowHandle,
                 hWndInsertAfter,
                 100, 100, // X, Y
-                windowConfig.windowSize.x, windowConfig.windowSize.y, // 宽度, 高度
+                currentConfig.windowSize.x, currentConfig.windowSize.y, // 宽度, 高度
                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE
             );
         }
@@ -355,7 +406,7 @@ public class WindowStyleManager : MonoBehaviour
         if (!targetCamera) targetCamera = Camera.main;
         if (!targetCamera) return;
 
-        if (windowConfig.enableTransparent)
+        if (currentConfig.enableTransparent)
         {
             targetCamera.clearFlags = CameraClearFlags.SolidColor;
             targetCamera.backgroundColor = new Color(0, 0, 0, 0);
@@ -386,7 +437,7 @@ public class WindowStyleManager : MonoBehaviour
     // ==================== 穿透 ====================
     void HandleClickThrough()
     {
-        if (!windowConfig.enableTransparent || !windowConfig.enableClickThrough)
+        if (!currentConfig.enableTransparent || !currentConfig.enableClickThrough)
             return;
 
         bool hit = CheckInteraction();
@@ -403,15 +454,15 @@ public class WindowStyleManager : MonoBehaviour
 
     bool CheckInteraction()
     {
-        if (windowConfig.interactionType == WindowsStyleConfig.InteractionType.UGUI ||
-            windowConfig.interactionType == WindowsStyleConfig.InteractionType.Both)
+        if (currentConfig.interactionType == WindowsStyleConfig.InteractionType.UGUI ||
+            currentConfig.interactionType == WindowsStyleConfig.InteractionType.Both)
         {
             if (IsPointerOverUI())
                 return true;
         }
 
-        if (windowConfig.interactionType == WindowsStyleConfig.InteractionType.Collider ||
-            windowConfig.interactionType == WindowsStyleConfig.InteractionType.Both)
+        if (currentConfig.interactionType == WindowsStyleConfig.InteractionType.Collider ||
+            currentConfig.interactionType == WindowsStyleConfig.InteractionType.Both)
         {
             if (IsPointerOver3D())
                 return true;
@@ -441,7 +492,7 @@ public class WindowStyleManager : MonoBehaviour
         return Physics.Raycast(
             targetCamera.ScreenPointToRay(Input.mousePosition),
             100f,
-            windowConfig.interactionLayerMask
+            currentConfig.interactionLayerMask
         );
     }
 }
