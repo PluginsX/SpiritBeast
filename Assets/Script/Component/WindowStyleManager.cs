@@ -1,36 +1,32 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public class WindowStyleManager : MonoBehaviour
 {
-    // ================= 配置结构 =================
-
+    // ==================== 数据结构 ====================
     [Serializable]
     public class WindowsStyleConfig
     {
-        [Header("模式")]
-        public bool isFullscreen = false;
-
         [Header("窗口模式")]
-        public Vector2Int windowSize = new Vector2Int(800, 600);
+        public bool isFullscreen = false;
+        public Vector2Int windowSize = new Vector2Int(1024, 576);
+
+        [Header("窗口边框（仅窗口模式有效）")]
         public bool hasBorder = true;
         public bool resizable = true;
-        public bool isTopmost = true;
 
-        [Header("全屏模式")]
-        [Tooltip("是否作为桌面壁纸层（WorkerW），false = 全屏置顶")]
-        public bool asWallpaper = false;
-
-        [Header("透明与交互")]
-        public bool enableTransparent = true;
+        [Header("透明与穿透")]
+        public bool enableTransparent = false;
         public bool enableClickThrough = false;
+
         public InteractionType interactionType = InteractionType.Collider;
         public LayerMask interactionLayerMask = Physics.DefaultRaycastLayers;
 
-        [Header("系统")]
-        public bool enableDPIAware = true;
+        [Header("窗口置顶（仅窗口模式有效）")]
+        public bool isAlwaysOnTop = false;
 
         public enum InteractionType
         {
@@ -40,37 +36,39 @@ public class WindowStyleManager : MonoBehaviour
         }
     }
 
+    // ==================== Inspector ====================
     public Camera targetCamera;
     public WindowsStyleConfig windowConfig = new WindowsStyleConfig();
 
-    private IntPtr hWnd;
-    private bool initialized;
-    private bool clickThroughCached;
+    // ==================== 状态 ====================
+    private IntPtr windowHandle;
+    private bool isInitialized;
+    private bool isQuitting;
 
-    // ================= Win32 =================
+    private PointerEventData pointerEventData;
+    private readonly List<RaycastResult> uiRaycastResults = new();
 
-    const int GWL_STYLE   = -16;
+    // ==================== Win32 常量 ====================
+    const int GWL_STYLE = -16;
     const int GWL_EXSTYLE = -20;
+    const int GWL_WNDPROC = -4;
 
+    const int WM_CLOSE = 0x0010;
+
+    const long WS_VISIBLE = 0x10000000;
     const long WS_OVERLAPPED = 0x00000000;
-    const long WS_POPUP      = 0x80000000;
-    const long WS_VISIBLE    = 0x10000000;
-    const long WS_CAPTION    = 0x00C00000;
-    const long WS_SYSMENU    = 0x00080000;
+    const long WS_CAPTION = 0x00C00000;
+    const long WS_SYSMENU = 0x00080000;
     const long WS_THICKFRAME = 0x00040000;
+    const long WS_MINIMIZEBOX = 0x00020000;
+    const long WS_MAXIMIZEBOX = 0x00010000;
+    const long WS_POPUP = 0x80000000;
 
-    const long WS_EX_LAYERED     = 0x00080000;
-    const long WS_EX_TOOLWINDOW  = 0x00000080;
+    const long WS_EX_LAYERED = 0x00080000;
     const long WS_EX_TRANSPARENT = 0x00000020;
 
-    const uint SWP_NOSIZE        = 0x0001;
-    const uint SWP_NOMOVE        = 0x0002;
-    const uint SWP_NOZORDER      = 0x0004;
-    const uint SWP_FRAMECHANGED  = 0x0020;
-    const uint SWP_SHOWWINDOW    = 0x0040;
-
-    [DllImport("user32.dll")]
-    static extern IntPtr GetActiveWindow();
+    // ==================== Win32 API ====================
+    [DllImport("user32.dll")] static extern IntPtr GetActiveWindow();
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
     static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
@@ -87,72 +85,181 @@ public class WindowStyleManager : MonoBehaviour
     );
 
     [DllImport("user32.dll")]
-    static extern bool SetProcessDPIAware();
+    static extern IntPtr CallWindowProc(
+        IntPtr lpPrevWndFunc,
+        IntPtr hWnd,
+        int msg,
+        IntPtr wParam,
+        IntPtr lParam
+    );
 
     [DllImport("dwmapi.dll")]
-    static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS m);
+    static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS margins);
+
+    const uint SWP_NOSIZE = 0x0001;
+    const uint SWP_NOMOVE = 0x0002;
+    const uint SWP_NOZORDER = 0x0004;
+    const uint SWP_FRAMECHANGED = 0x0020;
+    const uint SWP_SHOWWINDOW = 0x0040;
+    
+    // 窗口置顶相关常量
+    const int HWND_TOPMOST = -1;
+    const int HWND_NOTOPMOST = -2;
+    const uint SWP_NOACTIVATE = 0x0010;
 
     [StructLayout(LayoutKind.Sequential)]
     struct MARGINS
     {
-        public int left, right, top, bottom;
+        public int left;
+        public int right;
+        public int top;
+        public int bottom;
     }
 
-    // ================= Unity 生命周期 =================
+    // ==================== WndProc Hook ====================
+    private IntPtr oldWndProc;
+    private WndProcDelegate newWndProc;
 
+    private delegate IntPtr WndProcDelegate(
+        IntPtr hWnd,
+        int msg,
+        IntPtr wParam,
+        IntPtr lParam
+    );
+
+    // ==================== Unity 生命周期 ====================
     void Awake()
     {
 #if !UNITY_EDITOR
-        if (windowConfig.enableDPIAware)
-            SetProcessDPIAware();
-
-        hWnd = GetActiveWindow();
-        initialized = true;
+        windowHandle = GetActiveWindow();
+        HookWindowClose();
 #endif
-        if (!targetCamera)
-            targetCamera = Camera.main;
+        isInitialized = true;
+    }
 
-        Apply();
+    void Start()
+    {
+        ApplyWindowStyle();
     }
 
     void Update()
     {
-        if (!initialized) return;
+        if (!isInitialized || isQuitting || windowHandle == IntPtr.Zero)
+            return;
 
-        if (windowConfig.enableTransparent && windowConfig.enableClickThrough)
-            UpdateClickThrough();
+        HandleClickThrough();
     }
 
-    // ================= 核心逻辑 =================
-
-    public void Apply()
+    void OnApplicationQuit()
     {
-#if UNITY_EDITOR
-        InitCamera();
-        return;
-#endif
-        if (!initialized) return;
-
-        ApplyWindowStyle();
-        ApplyWindowZOrder();
-        ApplyWindowRect();
-        InitCamera();
+        isQuitting = true;
     }
 
+    // ==================== Public API ====================
+
+    /// <summary>
+    /// 运行时设置窗口样式（立即生效）
+    /// </summary>
+    public void SetWindowStyle(WindowsStyleConfig newConfig)
+    {
+        if (newConfig == null)
+        {
+            Debug.LogWarning("SetWindowStyle failed: config is null");
+            return;
+        }
+
+        if (!isInitialized || isQuitting)
+            return;
+
+        // 深拷贝，防止外部修改引用
+        windowConfig = new WindowsStyleConfig
+        {
+            isFullscreen = newConfig.isFullscreen,
+            windowSize = newConfig.windowSize,
+            hasBorder = newConfig.hasBorder,
+            resizable = newConfig.resizable,
+            enableTransparent = newConfig.enableTransparent,
+            enableClickThrough = newConfig.enableClickThrough,
+            interactionType = newConfig.interactionType,
+            interactionLayerMask = newConfig.interactionLayerMask
+        };
+
+#if !UNITY_EDITOR
+        ApplyWindowStyle();
+#endif
+    }
+
+    // ==================== 核心：拦截系统关闭 ====================
+    void HookWindowClose()
+    {
+        newWndProc = CustomWndProc;
+        oldWndProc = SetWindowLongPtr64(
+            windowHandle,
+            GWL_WNDPROC,
+            Marshal.GetFunctionPointerForDelegate(newWndProc)
+        );
+    }
+
+    IntPtr CustomWndProc(
+        IntPtr hWnd,
+        int msg,
+        IntPtr wParam,
+        IntPtr lParam)
+    {
+        if (msg == WM_CLOSE)
+        {
+            if (!isQuitting)
+            {
+                isQuitting = true;
+                Application.Quit();
+            }
+            return IntPtr.Zero; // 阻止系统直接销毁窗口
+        }
+
+        return CallWindowProc(oldWndProc, hWnd, msg, wParam, lParam);
+    }
+
+    // ==================== 窗口样式 ====================
     void ApplyWindowStyle()
     {
+#if UNITY_EDITOR
+        return;
+#endif
         long style;
-        long exStyle = WS_EX_TOOLWINDOW;
 
-        if (windowConfig.isFullscreen)
+        // 全屏模式且启用透明时，自动设置为无边框
+        if (windowConfig.isFullscreen && windowConfig.enableTransparent)
         {
+            windowConfig.hasBorder = false;
+        }
+
+        // 窗口模式且有边框时，自动禁用透明（因为透明选项被隐藏了）
+        if (!windowConfig.isFullscreen && windowConfig.hasBorder)
+        {
+            windowConfig.enableTransparent = false;
+        }
+
+        // 判断是否为独占全屏模式
+        bool isExclusiveFullscreen = windowConfig.isFullscreen && !windowConfig.enableTransparent;
+
+        if (isExclusiveFullscreen)
+        {
+            // 独占全屏模式：真正的全屏，不支持透明
             style = WS_POPUP | WS_VISIBLE;
         }
         else
         {
+            // 窗口模式（包括透明全屏模拟）
             if (windowConfig.hasBorder)
             {
-                style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
+                style =
+                    WS_OVERLAPPED |
+                    WS_CAPTION |
+                    WS_SYSMENU |
+                    WS_MINIMIZEBOX |
+                    WS_MAXIMIZEBOX |
+                    WS_VISIBLE;
+
                 if (windowConfig.resizable)
                     style |= WS_THICKFRAME;
             }
@@ -162,102 +269,179 @@ public class WindowStyleManager : MonoBehaviour
             }
         }
 
+        SetWindowLongPtr64(windowHandle, GWL_STYLE, (IntPtr)style);
+
+        long exStyle = (long)GetWindowLongPtr64(windowHandle, GWL_EXSTYLE);
+
         if (windowConfig.enableTransparent)
             exStyle |= WS_EX_LAYERED;
+        else
+            exStyle &= ~WS_EX_LAYERED;
 
-        SetWindowLongPtr64(hWnd, GWL_STYLE, (IntPtr)style);
-        SetWindowLongPtr64(hWnd, GWL_EXSTYLE, (IntPtr)exStyle);
+        SetWindowLongPtr64(windowHandle, GWL_EXSTYLE, (IntPtr)exStyle);
+
+        // 设置窗口位置和大小
+        SetWindowPosition();
+
+        ConfigureCamera();
+
+        // 立即应用透明穿透设置
+        if (windowConfig.enableTransparent && windowConfig.enableClickThrough)
+        {
+            // 延迟一帧应用穿透设置，确保窗口样式已生效
+            Invoke(nameof(ApplyClickThrough), 0.1f);
+        }
+    }
+
+    void ApplyClickThrough()
+    {
+        if (!windowConfig.enableTransparent || !windowConfig.enableClickThrough)
+            return;
+
+        bool hit = CheckInteraction();
+
+        long exStyle = (long)GetWindowLongPtr64(windowHandle, GWL_EXSTYLE);
+
+        if (hit)
+            exStyle &= ~WS_EX_TRANSPARENT;
+        else
+            exStyle |= WS_EX_TRANSPARENT;
+
+        SetWindowLongPtr64(windowHandle, GWL_EXSTYLE, (IntPtr)exStyle);
+    }
+
+    void SetWindowPosition()
+    {
+        if (windowHandle == IntPtr.Zero) return;
+
+        if (windowConfig.isFullscreen)
+        {
+            // 全屏模式：设置为屏幕大小
+            var screen = Screen.currentResolution;
+            
+            // 根据置顶选项决定窗口层级
+            IntPtr hWndInsertAfter = windowConfig.isAlwaysOnTop ? 
+                (IntPtr)HWND_TOPMOST : 
+                (IntPtr)HWND_NOTOPMOST;
+                
+            SetWindowPos(
+                windowHandle,
+                hWndInsertAfter,
+                0, 0, // X, Y
+                screen.width, screen.height, // 宽度, 高度
+                SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE
+            );
+        }
+        else
+        {
+            // 窗口模式：设置指定大小
+            IntPtr hWndInsertAfter = windowConfig.isAlwaysOnTop ? 
+                (IntPtr)HWND_TOPMOST : 
+                (IntPtr)HWND_NOTOPMOST;
+                
+            SetWindowPos(
+                windowHandle,
+                hWndInsertAfter,
+                100, 100, // X, Y
+                windowConfig.windowSize.x, windowConfig.windowSize.y, // 宽度, 高度
+                SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE
+            );
+        }
+    }
+
+    // ==================== 相机 ====================
+    void ConfigureCamera()
+    {
+        if (!targetCamera) targetCamera = Camera.main;
+        if (!targetCamera) return;
 
         if (windowConfig.enableTransparent)
         {
-            MARGINS m = new MARGINS { left = -1 };
-            DwmExtendFrameIntoClientArea(hWnd, ref m);
+            targetCamera.clearFlags = CameraClearFlags.SolidColor;
+            targetCamera.backgroundColor = new Color(0, 0, 0, 0);
+            targetCamera.allowHDR = false;
+            
+            // 启用DWM透明效果
+            EnableDWMTransparency();
         }
     }
 
-    void ApplyWindowRect()
+    void EnableDWMTransparency()
     {
-        if (windowConfig.isFullscreen)
+        if (windowHandle == IntPtr.Zero) return;
+
+        // 设置边距为-1，表示扩展整个客户区
+        MARGINS margins = new MARGINS
         {
-            var r = Screen.currentResolution;
-            SetWindowPos(
-                hWnd, IntPtr.Zero,
-                0, 0, r.width, r.height,
-                SWP_FRAMECHANGED | SWP_SHOWWINDOW
-            );
-        }
-        else
-        {
-            SetWindowPos(
-                hWnd, IntPtr.Zero,
-                100, 100,
-                windowConfig.windowSize.x,
-                windowConfig.windowSize.y,
-                SWP_FRAMECHANGED | SWP_SHOWWINDOW
-            );
-        }
+            left = -1,
+            right = -1,
+            top = -1,
+            bottom = -1
+        };
+
+        // 调用DWM API启用透明效果
+        DwmExtendFrameIntoClientArea(windowHandle, ref margins);
     }
 
-    void ApplyWindowZOrder()
+    // ==================== 穿透 ====================
+    void HandleClickThrough()
     {
-        IntPtr z;
+        if (!windowConfig.enableTransparent || !windowConfig.enableClickThrough)
+            return;
 
-        if (windowConfig.isFullscreen)
-        {
-            // asWallpaper 结构预留（WorkerW 挂载应在此扩展）
-            z = windowConfig.asWallpaper ? (IntPtr)1 : (IntPtr)(-1);
-        }
+        bool hit = CheckInteraction();
+
+        long exStyle = (long)GetWindowLongPtr64(windowHandle, GWL_EXSTYLE);
+
+        if (hit)
+            exStyle &= ~WS_EX_TRANSPARENT;
         else
+            exStyle |= WS_EX_TRANSPARENT;
+
+        SetWindowLongPtr64(windowHandle, GWL_EXSTYLE, (IntPtr)exStyle);
+    }
+
+    bool CheckInteraction()
+    {
+        if (windowConfig.interactionType == WindowsStyleConfig.InteractionType.UGUI ||
+            windowConfig.interactionType == WindowsStyleConfig.InteractionType.Both)
         {
-            z = windowConfig.isTopmost ? (IntPtr)(-1) : (IntPtr)(-2);
+            if (IsPointerOverUI())
+                return true;
         }
 
-        SetWindowPos(
-            hWnd, z,
-            0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE
+        if (windowConfig.interactionType == WindowsStyleConfig.InteractionType.Collider ||
+            windowConfig.interactionType == WindowsStyleConfig.InteractionType.Both)
+        {
+            if (IsPointerOver3D())
+                return true;
+        }
+
+        return false;
+    }
+
+    bool IsPointerOverUI()
+    {
+        if (EventSystem.current == null)
+            return false;
+
+        pointerEventData ??= new PointerEventData(EventSystem.current);
+        pointerEventData.position = Input.mousePosition;
+
+        uiRaycastResults.Clear();
+        EventSystem.current.RaycastAll(pointerEventData, uiRaycastResults);
+
+        return uiRaycastResults.Count > 0;
+    }
+
+    bool IsPointerOver3D()
+    {
+        if (!targetCamera) return false;
+
+        return Physics.Raycast(
+            targetCamera.ScreenPointToRay(Input.mousePosition),
+            100f,
+            windowConfig.interactionLayerMask
         );
-    }
-
-    void InitCamera()
-    {
-        if (!targetCamera) return;
-
-        targetCamera.clearFlags = CameraClearFlags.SolidColor;
-        targetCamera.backgroundColor =
-            new Color(0, 0, 0, windowConfig.enableTransparent ? 0 : 1);
-        targetCamera.allowHDR = false;
-    }
-
-    // ================= 点击穿透 =================
-
-    void UpdateClickThrough()
-    {
-        bool hit = false;
-
-        if (windowConfig.interactionType != WindowsStyleConfig.InteractionType.Collider)
-        {
-            if (EventSystem.current != null &&
-                EventSystem.current.IsPointerOverGameObject())
-                hit = true;
-        }
-
-        if (windowConfig.interactionType != WindowsStyleConfig.InteractionType.UGUI &&
-            targetCamera != null)
-        {
-            Ray ray = targetCamera.ScreenPointToRay(Input.mousePosition);
-            if (Physics.Raycast(ray, 100f, windowConfig.interactionLayerMask))
-                hit = true;
-        }
-
-        if (hit != clickThroughCached)
-        {
-            long ex = (long)GetWindowLongPtr64(hWnd, GWL_EXSTYLE);
-            if (!hit) ex |= WS_EX_TRANSPARENT;
-            else ex &= ~WS_EX_TRANSPARENT;
-
-            SetWindowLongPtr64(hWnd, GWL_EXSTYLE, (IntPtr)ex);
-            clickThroughCached = hit;
-        }
     }
 }
